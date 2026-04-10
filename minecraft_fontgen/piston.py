@@ -65,6 +65,13 @@ def select_minecraft_version(mc_version=None):
     versions = fetch_minecraft_versions()
 
     if mc_version:
+        if mc_version == "latest":
+            mc_version = versions["latest"]["release"]
+            log(f"→ 📂 Resolved 'latest' to {mc_version}")
+        elif mc_version == "latest-snapshot":
+            mc_version = versions["latest"]["snapshot"]
+            log(f"→ 📂 Resolved 'latest-snapshot' to {mc_version}")
+
         for version_type in ["releases", "snapshots"]:
             if mc_version in versions[version_type]:
                 log(f"→ 📂 Using version {mc_version}")
