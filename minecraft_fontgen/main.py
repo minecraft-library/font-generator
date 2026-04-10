@@ -35,7 +35,7 @@ def main():
     font_files = create_font_files(glyph_map, use_cff, output_fonts, output_dir, OUTPUT_FONT_NAME, output_ext)
 
     if validate and font_files:
-        # Validate with FontForge (development only: --validate or FONTGEN_VALIDATE=1)
+        # Validate with FontForge (development only: --validate or MCFONT_VALIDATE=1)
         validate_fonts(font_files)
 
         # Write visual preview images

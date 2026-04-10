@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Minecraft-FontGen converts Minecraft's bitmap font glyphs into OpenType (CFF) or TrueType font files. It downloads a selected Minecraft version's JAR via the Piston API, extracts bitmap PNG textures and font provider JSON, then traces pixel contours into vector outlines and assembles complete `.otf`/`.ttf` fonts using fontTools.
+Minecraft Font Generator converts Minecraft's bitmap font glyphs into OpenType (CFF) or TrueType font files. It downloads a selected Minecraft version's JAR via the Piston API, extracts bitmap PNG textures and font provider JSON, then traces pixel contours into vector outlines and assembles complete `.otf`/`.ttf` fonts using fontTools.
 
 ## Commands
 
@@ -25,7 +25,7 @@ python -m minecraft_fontgen --version 1.21.4 --styles regular,bold --output dist
 python -m minecraft_fontgen --version 1.21.4 --validate
 
 # Or via environment variable (useful for IDE run configurations)
-FONTGEN_VALIDATE=1 python -m minecraft_fontgen --version 1.21.4
+MCFONT_VALIDATE=1 python -m minecraft_fontgen --version 1.21.4
 
 # Validate an existing font file directly
 fontforge -lang=py -script minecraft_fontgen/validate_font.py output/Minecraft-Regular.otf
@@ -39,12 +39,12 @@ There are no tests or linting configured.
 
 | CLI Argument | Env Var | Description | Default |
 |---|---|---|---|
-| `--version` | `FONTGEN_VERSION` | Minecraft version (skips interactive prompt when set) | `None` (interactive) |
-| `--output` | `FONTGEN_OUTPUT` | Output directory for font files | `output` |
-| `--styles` | `FONTGEN_STYLES` | Comma-separated styles: `regular,bold,italic,bolditalic,galactic,illageralt` | All enabled in `config.py` |
-| `--type` | `FONTGEN_TYPE` | Font type: `opentype`/`otf` or `truetype`/`ttf` | `opentype` |
-| `--silent` | `FONTGEN_SILENT` | Suppress output (`1`/`true`/`yes`) | `False` |
-| `--validate` | `FONTGEN_VALIDATE` | Run FontForge validation after build (`1`/`true`/`yes`) | `False` |
+| `--version` | `MCFONT_VERSION` | Minecraft version (skips interactive prompt when set) | `None` (interactive) |
+| `--output` | `MCFONT_OUTPUT` | Output directory for font files | `output` |
+| `--styles` | `MCFONT_STYLES` | Comma-separated styles: `regular,bold,italic,bolditalic,galactic,illageralt` | All enabled in `config.py` |
+| `--type` | `MCFONT_TYPE` | Font type: `opentype`/`otf` or `truetype`/`ttf` | `opentype` |
+| `--silent` | `MCFONT_SILENT` | Suppress output (`1`/`true`/`yes`) | `False` |
+| `--validate` | `MCFONT_VALIDATE` | Run FontForge validation after build (`1`/`true`/`yes`) | `False` |
 
 ## Architecture
 
@@ -53,11 +53,11 @@ There are no tests or linting configured.
 The pipeline runs sequentially through six stages:
 
 1. **Clean** (`minecraft_fontgen.file_io:clean_directories`) - Wipes and recreates `work/` and `output/` directories
-2. **Download** (`minecraft_fontgen.piston:download_minecraft_assets`) - Selects a Minecraft version (non-interactively via `--version`/`FONTGEN_VERSION`, or interactively via prompt). Downloads version manifest, client JAR, and extracts font assets to `work/`. Then downloads unifont hex files if enabled. Returns the matched font file path, format, and unifont glyph data
+2. **Download** (`minecraft_fontgen.piston:download_minecraft_assets`) - Selects a Minecraft version (non-interactively via `--version`/`MCFONT_VERSION`, or interactively via prompt). Downloads version manifest, client JAR, and extracts font assets to `work/`. Then downloads unifont hex files if enabled. Returns the matched font file path, format, and unifont glyph data
 3. **Parse + Slice** (`minecraft_fontgen.file_io:parse_provider_file`) - Reads `include/default.json` from the extracted JAR to discover bitmap font providers (PNG files + Unicode character mappings). Internally calls `slice_provider_tiles` to crop individual glyphs from bitmap PNGs, trace contours with flood-fill labeling, and generate SVG debug output
 4. **Build glyph map** (`minecraft_fontgen.file_io:build_glyph_map`) - Merges provider glyphs (priority) with unifont fallback glyphs into an `OrderedDict` keyed by codepoint, per style (Regular/Bold). Processes alternate fonts (Galactic, Illageralt) by cloning the Regular glyph map and overlaying alternate glyphs from their JSON provider files. Pre-computes scaled coordinates (pixel space to font units) for all glyphs via `precompute_glyph_scaling`
 5. **Create font files** (`minecraft_fontgen.font_creator:create_font_files`) - Batch creates all enabled font styles (Regular, Bold, Italic, BoldItalic, Galactic, Illageralt). Initializes fontTools `TTFont` tables for each style, converts glyphs with a single progress bar across all styles, then finalizes and saves all fonts. Styles whose glyph map is missing (e.g. Galactic on older versions) are gracefully skipped. Returns the list of output file paths
-6. **Validate** (`minecraft_fontgen.functions:validate_fonts`) - Optional, runs only when `--validate` or `FONTGEN_VALIDATE=1` is set. Invokes `validate_font.py` via FontForge subprocess on all generated font files. Reports per-glyph validation errors bucketed by type
+6. **Validate** (`minecraft_fontgen.functions:validate_fonts`) - Optional, runs only when `--validate` or `MCFONT_VALIDATE=1` is set. Invokes `validate_font.py` via FontForge subprocess on all generated font files. Reports per-glyph validation errors bucketed by type
 
 ### Glyph Processing
 
@@ -84,7 +84,7 @@ Each file creates one OpenType/TrueType table via `fontTools.ttLib.newTable()`. 
 ### Key Constants (minecraft_fontgen/config.py)
 
 Configuration is module-level constants, not CLI args (unless noted). Key settings:
-- `OPENTYPE = True` - CFF (OpenType) vs TrueType outlines (overridable via `--type`/`FONTGEN_TYPE`)
+- `OPENTYPE = True` - CFF (OpenType) vs TrueType outlines (overridable via `--type`/`MCFONT_TYPE`)
 - `UNIFONT = True` - Include GNU Unifont fallback glyphs
 - `FONT_STYLES` - List of dicts defining all font styles. Each has `name`, `enabled`, `bold`, `italic`, `pixel_style`, `debug`. Alternate styles also have `json_file` and `map_lowercase`. Toggle `enabled` to include/exclude a style. The `debug` dict has keys `svg` (pixel grid SVGs + path SVGs for provider tiles), `bmp` (cropped glyph bitmaps), and `unifont` (pixel grid SVGs for unifont fallback glyphs), all defaulting to `False`
 - `UNITS_PER_EM = 1024`, `DEFAULT_GLYPH_SIZE = 8` - Font metrics. `DEFAULT_GLYPH_SIZE` is a fallback default for missing tile sizes; the actual scale factor uses each tile's height from `tile["size"][1]` (8 for provider glyphs, 16 for unifont)

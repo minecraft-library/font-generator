@@ -1,4 +1,4 @@
-# Minecraft-FontGen
+# Minecraft Font Generator
 
 Convert Minecraft's bitmap font glyphs into fully functional OpenType (`.otf`) or TrueType (`.ttf`) font files.
 
@@ -51,8 +51,8 @@ Convert Minecraft's bitmap font glyphs into fully functional OpenType (`.otf`) o
 Clone the repository and create a virtual environment:
 
 ```bash
-git clone https://github.com/SkyBlock-Simplified/minecraft-fontgen.git
-cd minecraft-fontgen
+git clone https://github.com/minecraft-library/font-generator.git
+cd font-generator
 ```
 
 <details>
@@ -85,7 +85,7 @@ pip install -e .
 
 #### Interactive Mode
 
-When no `--version` flag or `FONTGEN_VERSION` env var is set, the tool launches
+When no `--version` flag or `MCFONT_VERSION` env var is set, the tool launches
 an interactive prompt where you can search and select a Minecraft version:
 
 ```bash
@@ -112,7 +112,7 @@ upfront to skip the interactive prompt entirely:
 python -m minecraft_fontgen --version 1.21.4
 
 # Via environment variable
-FONTGEN_VERSION=1.21.4 python -m minecraft_fontgen
+MCFONT_VERSION=1.21.4 python -m minecraft_fontgen
 
 # Combine multiple options
 python -m minecraft_fontgen --version 1.21.4 --styles regular,bold --output dist/fonts --silent
@@ -136,7 +136,7 @@ Python virtual environment with these environment variables pre-set:
 
 | Variable | Value | Purpose |
 |----------|-------|---------|
-| `FONTGEN_VALIDATE` | `1` | Runs FontForge validation after build |
+| `MCFONT_VALIDATE` | `1` | Runs FontForge validation after build |
 | `PYTHONUNBUFFERED` | `1` | Ensures real-time console output |
 
 To pass additional arguments (e.g. `--version 1.21.4`), open the configuration
@@ -155,12 +155,12 @@ CLI argument  >  Shell environment variable  >  .env file  >  config.py defaults
 
 | CLI | Env Var | Description | Default | Example |
 |-----|---------|-------------|---------|---------|
-| `--version` | `FONTGEN_VERSION` | Minecraft version to compile (skips interactive prompt) | Interactive prompt | `1.21.4` |
-| `--output` | `FONTGEN_OUTPUT` | Directory for generated font files | `output` | `dist/fonts` |
-| `--styles` | `FONTGEN_STYLES` | Comma-separated font styles to generate | All enabled in `config.py` | `regular,bold` |
-| `--type` | `FONTGEN_TYPE` | Font type: `opentype`/`otf` or `truetype`/`ttf` | `opentype` | `opentype` |
-| `--silent` | `FONTGEN_SILENT` | Suppress all output except errors | Disabled | `true` |
-| `--validate` | `FONTGEN_VALIDATE` | Run FontForge validation after build (requires `fontforge`) | Disabled | `true` |
+| `--version` | `MCFONT_VERSION` | Minecraft version to compile (skips interactive prompt) | Interactive prompt | `1.21.4` |
+| `--output` | `MCFONT_OUTPUT` | Directory for generated font files | `output` | `dist/fonts` |
+| `--styles` | `MCFONT_STYLES` | Comma-separated font styles to generate | All enabled in `config.py` | `regular,bold` |
+| `--type` | `MCFONT_TYPE` | Font type: `opentype`/`otf` or `truetype`/`ttf` | `opentype` | `opentype` |
+| `--silent` | `MCFONT_SILENT` | Suppress all output except errors | Disabled | `true` |
+| `--validate` | `MCFONT_VALIDATE` | Run FontForge validation after build (requires `fontforge`) | Disabled | `true` |
 
 Boolean flags accept `1`, `true`, or `yes`. Valid styles: `regular`, `bold`,
 `italic`, `bolditalic`, `galactic`, `illageralt`.
@@ -176,7 +176,7 @@ python -m minecraft_fontgen --output build/fonts
 python -m minecraft_fontgen --silent --version 1.21.4
 
 # Using environment variables
-FONTGEN_VERSION=1.21.4 FONTGEN_STYLES=regular,bold python -m minecraft_fontgen
+MCFONT_VERSION=1.21.4 MCFONT_STYLES=regular,bold python -m minecraft_fontgen
 ```
 
 > [!NOTE]
@@ -192,16 +192,16 @@ modifying your shell environment. The file is loaded automatically at startup.
 
 ```dotenv
 # .env
-FONTGEN_VERSION=1.21.4
-FONTGEN_OUTPUT=output
-FONTGEN_STYLES=regular,bold,italic,bolditalic,galactic,illageralt
-FONTGEN_TYPE=opentype
-FONTGEN_SILENT=false
-FONTGEN_VALIDATE=false
+MCFONT_VERSION=1.21.4
+MCFONT_OUTPUT=output
+MCFONT_STYLES=regular,bold,italic,bolditalic,galactic,illageralt
+MCFONT_TYPE=opentype
+MCFONT_SILENT=false
+MCFONT_VALIDATE=false
 ```
 
 Values from `.env` will **not** overwrite variables that already exist in your
-shell environment. For example, if `FONTGEN_OUTPUT=dist` is in your `.env` but
+shell environment. For example, if `MCFONT_OUTPUT=dist` is in your `.env` but
 you run `python -m minecraft_fontgen --output build`, the output directory will
 be `build`.
 
@@ -228,7 +228,7 @@ output/
 > automatically skipped.
 
 The file extension is `.otf` for OpenType (CFF) or `.ttf` for TrueType,
-controlled by `--type` / `FONTGEN_TYPE` (or the `OPENTYPE` constant in
+controlled by `--type` / `MCFONT_TYPE` (or the `OPENTYPE` constant in
 [`config.py`](minecraft_fontgen/config.py)).
 
 ## Unicode Coverage
@@ -571,10 +571,10 @@ The generated fonts include glyphs from two sources:
 
 ## Docker Compose
 
-Minecraft-FontGen can be used as a **one-shot build task** in a Docker Compose
-stack. This is useful when another service (a Discord bot, a web app, a resource
-pack compiler, etc.) needs the generated font files but you don't want to host
-them in a repository or keep a persistent container running.
+Minecraft Font Generator can be used as a **one-shot build task** in a Docker
+Compose stack. This is useful when another service (a Discord bot, a web app, a
+resource pack compiler, etc.) needs the generated font files but you don't want
+to host them in a repository or keep a persistent container running.
 
 The pattern:
 1. An ephemeral container clones the repo, installs the tool, and compiles the fonts.
@@ -588,23 +588,23 @@ Add this service to your project's `docker-compose.yml`:
 
 ```yaml
 services:
-  fontgen:
+  font-generator:
     image: python:3-slim
     user: "1000:1000"
     working_dir: /build
     environment:
-      FONTGEN_VERSION: "1.21.4"
-      FONTGEN_STYLES: "regular,bold"
-      FONTGEN_SILENT: "true"
-      FONTGEN_OUTPUT: "/output"
-      PATH: "/home/fontgen/.local/bin:$PATH"
+      MCFONT_VERSION: "1.21.4"
+      MCFONT_STYLES: "regular,bold"
+      MCFONT_SILENT: "true"
+      MCFONT_OUTPUT: "/output"
+      PATH: "/home/builder/.local/bin:$PATH"
     volumes:
       - fonts:/output
     entrypoint: ["bash", "-c"]
     command:
       - |
-        pip install --user --quiet git+https://github.com/SkyBlock-Simplified/minecraft-fontgen.git &&
-        minecraft-fontgen
+        pip install --user --quiet git+https://github.com/minecraft-library/font-generator.git &&
+        minecraft-font-generator
     profiles:
       - build
 
@@ -621,30 +621,30 @@ volumes:
 
 ```yaml
 services:
-  fontgen:
+  font-generator:
     image: python:3-slim
     user: "1000:1000"
     working_dir: /build
     environment:
-      FONTGEN_VERSION: "1.21.4"
-      FONTGEN_STYLES: "regular,bold"
-      FONTGEN_SILENT: "true"
-      FONTGEN_OUTPUT: "/output"
-      PATH: "/home/fontgen/.local/bin:$PATH"
+      MCFONT_VERSION: "1.21.4"
+      MCFONT_STYLES: "regular,bold"
+      MCFONT_SILENT: "true"
+      MCFONT_OUTPUT: "/output"
+      PATH: "/home/builder/.local/bin:$PATH"
     volumes:
       - fonts:/output
     entrypoint: ["bash", "-c"]
     command:
       - |
-        pip install --user --quiet git+https://github.com/SkyBlock-Simplified/minecraft-fontgen.git &&
-        minecraft-fontgen
+        pip install --user --quiet git+https://github.com/minecraft-library/font-generator.git &&
+        minecraft-font-generator
 
   bot:
     build: .
     volumes:
       - fonts:/app/fonts:ro
     depends_on:
-      fontgen:
+      font-generator:
         condition: service_completed_successfully
     environment:
       FONT_PATH: /app/fonts
@@ -654,8 +654,8 @@ volumes:
 ```
 
 In this setup:
-- `fontgen` runs first, compiles the fonts into the shared `fonts` volume, then exits.
-- `bot` waits for `fontgen` to complete successfully before starting.
+- `font-generator` runs first, compiles the fonts into the shared `fonts` volume, then exits.
+- `bot` waits for `font-generator` to complete successfully before starting.
 - The `bot` service mounts the same volume as read-only (`:ro`) at `/app/fonts`.
 
 </details>
@@ -664,12 +664,12 @@ In this setup:
 
 ```bash
 # Run only the font generation task
-docker compose run --rm fontgen
+docker compose run --rm font-generator
 
 # Or if using profiles
-docker compose --profile build run --rm fontgen
+docker compose --profile build run --rm font-generator
 
-# Start the full stack (bot waits for fontgen to finish)
+# Start the full stack (bot waits for font-generator to finish)
 docker compose up
 ```
 
@@ -682,7 +682,7 @@ existing volume and re-run:
 
 ```bash
 docker volume rm <project>_fonts
-docker compose run --rm fontgen
+docker compose run --rm font-generator
 ```
 
 ## How It Works
@@ -735,7 +735,7 @@ Each bitmap glyph goes through:
 ## Project Structure
 
 ```
-minecraft-fontgen/
+font-generator/
 ├── minecraft_fontgen/
 │   ├── __init__.py
 │   ├── __main__.py                # python -m entry point

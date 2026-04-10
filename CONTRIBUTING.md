@@ -1,4 +1,4 @@
-# Contributing to Minecraft-FontGen
+# Contributing to Minecraft Font Generator
 
 Thank you for your interest in contributing! This document explains how to get
 started, what to expect during the review process, and the conventions this
@@ -35,12 +35,12 @@ project follows.
 
 1. **Fork and clone the repository**
 
-   [Fork the repository](https://github.com/SkyBlock-Simplified/minecraft-fontgen/fork),
+   [Fork the repository](https://github.com/minecraft-library/font-generator/fork),
    then clone your fork:
 
    ```bash
-   git clone https://github.com/<your-username>/minecraft-fontgen.git
-   cd minecraft-fontgen
+   git clone https://github.com/<your-username>/font-generator.git
+   cd font-generator
    ```
 
 2. **Create and activate a virtual environment**
@@ -151,7 +151,7 @@ these conventions:
 Write clear, concise commit messages that describe *what* changed and *why*.
 
 ```
-Add FONTGEN_VERSION env var for non-interactive version selection
+Add MCFONT_VERSION env var for non-interactive version selection
 
 Allows CI/CD and Docker workflows to specify the Minecraft version
 without requiring an interactive terminal prompt.
@@ -173,7 +173,7 @@ FontForge's per-glyph validator on all generated font files after the build:
 python -m minecraft_fontgen --version 1.21.4 --validate
 
 # Via environment variable (useful in IDE run configurations)
-FONTGEN_VALIDATE=1 python -m minecraft_fontgen --version 1.21.4
+MCFONT_VALIDATE=1 python -m minecraft_fontgen --version 1.21.4
 ```
 
 This reports errors grouped by type (wrong direction contours,
@@ -198,7 +198,7 @@ in your PR description to help reviewers verify correctness.
    ```
 
 2. **Open a Pull Request** against the `master` branch of
-   [SkyBlock-Simplified/minecraft-fontgen](https://github.com/SkyBlock-Simplified/minecraft-fontgen).
+   [minecraft-library/font-generator](https://github.com/minecraft-library/font-generator).
 
 3. **In the PR description**, include:
    - A summary of the changes and the motivation behind them.
@@ -221,7 +221,7 @@ in your PR description to help reviewers verify correctness.
 
 ## Reporting Issues
 
-Use [GitHub Issues](https://github.com/SkyBlock-Simplified/minecraft-fontgen/issues)
+Use [GitHub Issues](https://github.com/minecraft-library/font-generator/issues)
 to report bugs or request features.
 
 When reporting a bug, include:

@@ -3,7 +3,7 @@ requires = ["setuptools>=69.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "minecraft-fontgen"
+name = "minecraft-font-generator"
 dynamic = ["version"]
 description = "A tool to convert Minecraft-style bitmaps into OpenType/TrueType fonts."
 requires-python = ">=3.10"
@@ -28,7 +28,7 @@ dependencies = [
 ]
 
 [project.scripts]
-minecraft-fontgen = "minecraft_fontgen.main:main"
+minecraft-font-generator = "minecraft_fontgen.main:main"
 
 [tool.setuptools.dynamic]
 version = { attr = "minecraft_fontgen.config.VERSION" }

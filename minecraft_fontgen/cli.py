@@ -46,7 +46,7 @@ def parse_args():
     # --- silent ---
     if args.silent is not None and args.silent:
         silent = True
-    elif os.environ.get("FONTGEN_SILENT", "").lower() in ("1", "true", "yes"):
+    elif os.environ.get("MCFONT_SILENT", "").lower() in ("1", "true", "yes"):
         silent = True
     else:
         silent = False
@@ -54,8 +54,8 @@ def parse_args():
     # --- output_dir ---
     if args.output is not None:
         output_dir = args.output
-    elif os.environ.get("FONTGEN_OUTPUT"):
-        output_dir = os.environ["FONTGEN_OUTPUT"]
+    elif os.environ.get("MCFONT_OUTPUT"):
+        output_dir = os.environ["MCFONT_OUTPUT"]
     else:
         output_dir = OUTPUT_DIR
 
@@ -63,8 +63,8 @@ def parse_args():
     raw_styles = None
     if args.styles is not None:
         raw_styles = args.styles
-    elif os.environ.get("FONTGEN_STYLES"):
-        raw_styles = os.environ["FONTGEN_STYLES"]
+    elif os.environ.get("MCFONT_STYLES"):
+        raw_styles = os.environ["MCFONT_STYLES"]
 
     if raw_styles is not None:
         requested = {s.strip().lower() for s in raw_styles.split(",")}
@@ -82,8 +82,8 @@ def parse_args():
     # --- version ---
     if args.version is not None:
         mc_version = args.version
-    elif os.environ.get("FONTGEN_VERSION"):
-        mc_version = os.environ["FONTGEN_VERSION"]
+    elif os.environ.get("MCFONT_VERSION"):
+        mc_version = os.environ["MCFONT_VERSION"]
     else:
         mc_version = None
 
@@ -92,8 +92,8 @@ def parse_args():
     raw_type = None
     if args.type is not None:
         raw_type = args.type
-    elif os.environ.get("FONTGEN_TYPE"):
-        raw_type = os.environ["FONTGEN_TYPE"]
+    elif os.environ.get("MCFONT_TYPE"):
+        raw_type = os.environ["MCFONT_TYPE"]
 
     if raw_type is not None:
         key = raw_type.strip().lower()
@@ -108,7 +108,7 @@ def parse_args():
     # --- validate ---
     if args.validate is not None and args.validate:
         validate = True
-    elif os.environ.get("FONTGEN_VALIDATE", "").lower() in ("1", "true", "yes"):
+    elif os.environ.get("MCFONT_VALIDATE", "").lower() in ("1", "true", "yes"):
         validate = True
     else:
         validate = False
