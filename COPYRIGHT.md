@@ -2,7 +2,7 @@
 
 ## Project License
 
-Copyright 2025 SkyBlock Simplified
+Copyright 2025 CraftedFury
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -43,5 +43,5 @@ applying to documents or applications that embed the font.
 ## Attribution
 
 - **Project author** - [CraftedFury](https://sbs.dev/)
-- **Organization** - [SkyBlock Simplified](https://github.com/SkyBlock-Simplified)
+- **Organization** - [Minecraft Library](https://github.com/minecraft-library)
 - **Font building library** - [fontTools](https://github.com/fonttools/fonttools) (Apache-2.0)

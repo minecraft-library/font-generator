@@ -13,7 +13,7 @@ OPENTYPE = True # False for TrueType
 # ==================================
 
 VERSION = "1.1.0"
-MANUFACTURER = "SkyBlock Simplified"
+MANUFACTURER = "Minecraft Library"
 DESIGNER = "CraftedFury"
 COPYRIGHT = "Copyright © Mojang AB"
 TRADEMARK = "The glyphs used in this font file are trademarked by Mojang."

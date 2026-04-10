@@ -185,7 +185,7 @@
       comment syntax for the file format. Please also get the specific
       language governing permissions and limitations under the License.
 
-   Copyright 2025 SkyBlock Simplified
+   Copyright 2025 CraftedFury
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
