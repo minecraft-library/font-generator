@@ -1082,7 +1082,6 @@ def precompute_glyph_scaling(glyph_map):
 
                 scaled_outer = _split_self_touching(scaled_outer)
                 scaled_holes = _split_self_touching(scaled_holes)
-                scaled_outer, scaled_holes = _inset_shared_vertices(scaled_outer, scaled_holes)
 
                 tile["scaled"] = {
                     "outer": scaled_outer,
@@ -1119,42 +1118,3 @@ def _split_self_touching(contours):
 
     return result
 
-def _inset_shared_vertices(scaled_outer, scaled_holes):
-    """Insets shared vertices by 1 font unit along the bisector of adjacent edges.
-
-    Breaks vertex sharing between contours (a pixel font artifact that
-    triggers FontForge's wrong-direction false positive).
-    """
-    all_contours = scaled_outer + scaled_holes
-    if len(all_contours) <= 1:
-        return scaled_outer, scaled_holes
-
-    shared_pts = set()
-    for i, ci in enumerate(all_contours):
-        si = {(round(x), round(y)) for x, y in ci}
-        for j, cj in enumerate(all_contours):
-            if i < j:
-                sj = {(round(x), round(y)) for x, y in cj}
-                shared_pts |= si & sj
-
-    if not shared_pts:
-        return scaled_outer, scaled_holes
-
-    for i, contour in enumerate(all_contours):
-        inset = []
-        n = len(contour)
-        for k, (x, y) in enumerate(contour):
-            if (round(x), round(y)) in shared_pts:
-                px, py = contour[(k - 1) % n]
-                nx, ny = contour[(k + 1) % n]
-                dx = (px - x) + (nx - x)
-                dy = (py - y) + (ny - y)
-                dist = (dx * dx + dy * dy) ** 0.5
-                if dist > 0:
-                    x += dx / dist
-                    y += dy / dist
-            inset.append((x, y))
-        all_contours[i] = inset
-
-    outer_count = len(scaled_outer)
-    return all_contours[:outer_count], all_contours[outer_count:]
