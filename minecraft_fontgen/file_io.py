@@ -51,6 +51,38 @@ def parse_provider_file(file, format, stack=None):
     slice_provider_tiles(providers)
     return providers
 
+PACK_FONT_IDS = ("minecraft:include/default", "minecraft:default")
+ALT_FONT_IDS = ("minecraft:alt", "minecraft:illageralt")
+
+
+def collect_pack_providers(stack):
+    """Parses and slices the default-font providers contributed by resource packs.
+
+    The returned list is ordered so that appending it after the vanilla
+    providers reproduces the game's priority under build_glyph_map's last-wins
+    merge: later packs beat earlier packs, every pack beats vanilla, a pack's
+    default.json beats its include/default.json, and within one file the
+    first-listed provider wins."""
+    providers = []
+    for font_id in PACK_FONT_IDS:
+        for source in stack.pack_sources():
+            raw = source.get_font_json(font_id)
+            if raw is None:
+                continue
+            layer = parse_json_providers(raw, stack, layer_name=source.name)
+            layer.reverse()  # the game walks a font's providers first-wins; the merge is last-wins
+            providers += layer
+
+    if providers:
+        slice_provider_tiles(providers)
+
+    for source in stack.pack_sources():
+        for font_id in source.list_font_ids():
+            if font_id not in PACK_FONT_IDS and font_id not in ALT_FONT_IDS:
+                log(f"→ ⚠️ Pack '{source.name}' defines font '{font_id}', which this tool does not build")
+
+    return providers
+
 def parse_bin_providers(byte_data):
     """Parses legacy binary glyph_sizes.bin format (Minecraft 1.8.9 and earlier).
 
