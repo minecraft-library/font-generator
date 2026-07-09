@@ -1,6 +1,7 @@
 import pytest
 
-from minecraft_fontgen.asset_source import sanitize_fs_name, split_resource_ref
+from minecraft_fontgen.asset_source import split_resource_ref
+from minecraft_fontgen.functions import sanitize_fs_name
 
 
 def test_namespaced_ref_splits_on_first_colon():

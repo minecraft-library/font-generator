@@ -3,7 +3,7 @@ import re
 import zipfile
 
 from minecraft_fontgen.config import RESOLVED_TEXTURE_DIR, WORK_DIR
-from minecraft_fontgen.functions import log, parse_json
+from minecraft_fontgen.functions import log, parse_json, sanitize_fs_name
 
 _NAMESPACE_RE = re.compile(r"^[a-z0-9_.-]+$")
 _PATH_RE = re.compile(r"^[a-z0-9_./-]+$")
@@ -26,11 +26,6 @@ def split_resource_ref(ref, default_namespace="minecraft"):
     if any(segment in ("", ".", "..") for segment in path.split("/")):
         raise ValueError(f"unsafe path '{path}'")
     return namespace, path
-
-
-def sanitize_fs_name(name):
-    """Reduces a string to a Windows-safe directory name."""
-    return re.sub(r"[^A-Za-z0-9_-]+", "_", name).strip("_") or "pack"
 
 
 class AssetSource:

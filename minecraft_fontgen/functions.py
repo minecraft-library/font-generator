@@ -20,6 +20,10 @@ def log(*args, **kwargs):
     if not config.SILENT_LOG:
         print(*args, **kwargs)
 
+def sanitize_fs_name(name):
+    """Reduces a string to a Windows-safe directory name."""
+    return re.sub(r"[^A-Za-z0-9_-]+", "_", name).strip("_") or "pack"
+
 def get_unicode_codepoint(unicode_char: str):
     """Converts a Unicode character string to its integer codepoint, handling surrogates."""
     try:
