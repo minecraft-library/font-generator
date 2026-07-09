@@ -19,13 +19,13 @@ pip install -e .
 python -m minecraft_fontgen
 
 # Run non-interactively
-python -m minecraft_fontgen --version 1.21.4 --styles regular,bold --output dist/fonts --silent
+python -m minecraft_fontgen --version latest --styles regular,bold --output dist/fonts --silent
 
 # Run with FontForge validation (requires fontforge installed)
-python -m minecraft_fontgen --version 1.21.4 --validate
+python -m minecraft_fontgen --version latest --validate
 
 # Or via environment variable (useful for IDE run configurations)
-MCFONT_VALIDATE=1 python -m minecraft_fontgen --version 1.21.4
+MCFONT_VALIDATE=1 python -m minecraft_fontgen --version latest
 
 # Validate an existing font file directly
 fontforge -lang=py -script minecraft_fontgen/validate_font.py output/Minecraft-Regular.otf
