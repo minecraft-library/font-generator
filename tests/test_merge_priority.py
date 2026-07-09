@@ -49,6 +49,7 @@ def test_later_pack_beats_earlier_pack():
 
     glyph_map = _build(AssetStack([_vanilla(), pack("pack1", 4), pack("pack2", 6)]))
     assert glyph_map["Regular"][0x2714]["pixels"]["width"] == 6
+    assert glyph_map["Regular"][0x2714]["layer"] == "pack2"
 
 
 def test_intra_pack_first_provider_wins():
@@ -98,3 +99,21 @@ def test_unknown_font_ids_are_reported(capsys):
     })
     collect_pack_providers(AssetStack([_vanilla(), pack]))
     assert "hypixel:custom" in capsys.readouterr().out
+
+
+def test_malformed_pack_font_json_is_skipped(capsys):
+    bad_pack = FakeSource("badpack", fonts={
+        "minecraft:default": b"{not json",
+    })
+    good_pack = FakeSource("goodpack", fonts={
+        "minecraft:default": font_json_bytes([_bitmap("goodpack:icons.png", ["✔"])]),
+    }, textures={
+        "goodpack:icons.png": make_png_bytes(8, 8, block(0, 0, 4, 8)),
+    })
+
+    providers = collect_pack_providers(AssetStack([_vanilla(), bad_pack, good_pack]))
+
+    assert len(providers) == 1
+    assert providers[0]["layer"] == "goodpack"
+    assert len(providers[0]["tiles"]) > 0
+    assert "badpack" in capsys.readouterr().out

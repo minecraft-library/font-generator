@@ -69,7 +69,11 @@ def collect_pack_providers(stack):
             raw = source.get_font_json(font_id)
             if raw is None:
                 continue
-            layer = parse_json_providers(raw, stack, layer_name=source.name)
+            try:
+                layer = parse_json_providers(raw, stack, layer_name=source.name)
+            except ValueError as error:
+                log(f" → ⚠️ Skipping malformed font JSON '{font_id}' in pack '{source.name}': {error}")
+                continue
             layer.reverse()  # the game walks a font's providers first-wins; the merge is last-wins
             providers += layer
 
