@@ -232,7 +232,8 @@ python -m minecraft_fontgen --version 1.21.4 --resource-pack base.zip --resource
 MCFONT_RESOURCE_PACKS="base.zip;overrides" python -m minecraft_fontgen --version 1.21.4
 ```
 
-Packs may be zips (a single nested root folder is tolerated) or unpacked
+> [!NOTE]
+> Packs may be zips (a single nested root folder is tolerated) or unpacked
 directories. Merge priority matches the game: a pack's providers win over
 vanilla for overlapping codepoints, and vanilla remains the fallback for
 everything else.
