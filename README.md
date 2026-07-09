@@ -228,7 +228,6 @@ vanilla font PNGs) can be merged into the generated fonts.
 > everything else.
 
 > [!IMPORTANT]
-> Known limitations:
 > - Only `bitmap` providers are converted. `space`, `ttf`, `unihex`, and
 >   `reference` providers are skipped with a warning.
 > - Packs that define entirely new font IDs are reported but not built; only
