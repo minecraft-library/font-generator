@@ -7,6 +7,7 @@ from math import atan
 SILENT_LOG = False # True to disable logging
 OUTPUT_DIR = "output"
 OPENTYPE = True # False for TrueType
+RESOURCE_PACKS = []  # default resource pack paths when no --resource-pack / MCFONT_RESOURCE_PACKS is given
 
 # ==================================
 # === FONT DETAILS / DO NOT EDIT ===

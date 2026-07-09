@@ -1,9 +1,23 @@
 import argparse
 import os
 
-from minecraft_fontgen.config import OUTPUT_DIR, OPENTYPE, FONT_STYLES
+from dataclasses import dataclass
+
+from minecraft_fontgen.config import OUTPUT_DIR, OPENTYPE, FONT_STYLES, RESOURCE_PACKS
 
 VALID_STYLES = {"regular", "bold", "italic", "bolditalic", "galactic", "illageralt"}
+
+
+@dataclass(frozen=True)
+class BuildOptions:
+    silent: bool
+    output_dir: str
+    output_fonts: list
+    mc_version: str | None
+    use_cff: bool
+    output_ext: str
+    validate: bool
+    resource_packs: tuple[str, ...]
 
 
 def _load_env_file(path=".env"):
@@ -24,7 +38,7 @@ def _load_env_file(path=".env"):
 
 
 def parse_args():
-    """Parses CLI arguments with env var fallbacks. Returns (silent, output_dir, output_fonts, mc_version, use_cff, output_ext, validate)."""
+    """Parses CLI arguments with env var fallbacks. Returns a BuildOptions."""
     _load_env_file()
 
     parser = argparse.ArgumentParser(description="Minecraft bitmap font to OpenType/TrueType converter.")
@@ -40,6 +54,10 @@ def parse_args():
                         help="Font type: opentype/otf or truetype/ttf (default: opentype)")
     parser.add_argument("--validate", action="store_true", default=None,
                         help="Run FontForge validation on generated fonts (requires fontforge)")
+    parser.add_argument("--resource-pack", action="append", metavar="PATH", default=None,
+                        help="Resource pack zip or directory whose font glyphs are merged into the "
+                             "generated fonts (repeatable; later packs override earlier ones, and "
+                             "all packs override vanilla)")
 
     args = parser.parse_args()
 
@@ -113,4 +131,28 @@ def parse_args():
     else:
         validate = False
 
-    return silent, output_dir, output_fonts, mc_version, use_cff, output_ext, validate
+    # --- resource packs ---
+    if args.resource_pack:
+        raw_packs = args.resource_pack
+    elif os.environ.get("MCFONT_RESOURCE_PACKS"):
+        raw_packs = [p for p in os.environ["MCFONT_RESOURCE_PACKS"].split(os.pathsep) if p.strip()]
+    else:
+        raw_packs = list(RESOURCE_PACKS)
+
+    resource_packs = []
+    for pack in raw_packs:
+        pack_path = os.path.abspath(pack)
+        if not os.path.exists(pack_path):
+            parser.error(f"Resource pack not found: {pack}")
+        resource_packs.append(pack_path)
+
+    return BuildOptions(
+        silent=silent,
+        output_dir=output_dir,
+        output_fonts=output_fonts,
+        mc_version=mc_version,
+        use_cff=use_cff,
+        output_ext=output_ext,
+        validate=validate,
+        resource_packs=tuple(resource_packs),
+    )

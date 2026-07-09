@@ -1,9 +1,10 @@
 import sys
 import io
 
+from minecraft_fontgen.asset_source import AssetStack, VanillaSource, open_resource_pack
 from minecraft_fontgen.cli import parse_args
 from minecraft_fontgen.piston import download_minecraft_assets
-from minecraft_fontgen.file_io import clean_directories, parse_provider_file, build_glyph_map
+from minecraft_fontgen.file_io import clean_directories, collect_pack_providers, parse_provider_file, build_glyph_map
 from minecraft_fontgen.font_creator import create_font_files
 from minecraft_fontgen.config import OUTPUT_FONT_NAME
 from minecraft_fontgen.functions import set_silent, log, validate_fonts
@@ -15,32 +16,46 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="repla
 
 def main():
     """Runs the font generation pipeline: download, parse, build glyph map, create fonts."""
-    # Parse user provided arguments
-    silent, output_dir, output_fonts, mc_version, use_cff, output_ext, validate = parse_args()
-    set_silent(silent)
+    opts = parse_args()
+    set_silent(opts.silent)
+
+    # Open packs before any network or destructive work so bad paths fail fast
+    try:
+        pack_sources = [open_resource_pack(p) for p in opts.resource_packs]
+    except ValueError as error:
+        log(f"❌ {error}")
+        raise SystemExit(1)
 
     # Clean work and output directories
-    clean_directories(output_dir)
+    clean_directories(opts.output_dir)
 
     # Download MC version, extract unifont + JAR assets
-    matched_file, matched_format, unifont_glyphs = download_minecraft_assets(mc_version)
+    matched_file, matched_format, unifont_glyphs = download_minecraft_assets(opts.mc_version)
 
-    # Parse provider glyphs from JAR bitmap PNGs (includes slicing)
-    providers = parse_provider_file(matched_file, matched_format)
+    # Layer user resource packs above the vanilla extraction (later packs win)
+    stack = AssetStack([VanillaSource()] + pack_sources)
+    try:
+        # Parse provider glyphs from JAR bitmap PNGs (includes slicing)
+        providers = parse_provider_file(matched_file, matched_format, stack)
 
-    # Build unified glyph map with pre-computed scaling
-    glyph_map = build_glyph_map(providers, unifont_glyphs)
+        # Append pack providers after vanilla so they win the last-wins merge
+        providers += collect_pack_providers(stack)
+
+        # Build unified glyph map with pre-computed scaling
+        glyph_map = build_glyph_map(providers, unifont_glyphs, stack)
+    finally:
+        stack.close()
 
     # Generate all font files
-    font_files = create_font_files(glyph_map, use_cff, output_fonts, output_dir, OUTPUT_FONT_NAME, output_ext)
+    font_files = create_font_files(glyph_map, opts.use_cff, opts.output_fonts, opts.output_dir, OUTPUT_FONT_NAME, opts.output_ext)
 
-    if validate and font_files:
+    if opts.validate and font_files:
         # Validate with FontForge (development only: --validate or MCFONT_VALIDATE=1)
         validate_fonts(font_files)
 
         # Write visual preview images
-        write_preview_image(font_files, output_dir)
-        write_render_image(font_files[0], output_dir)
+        write_preview_image(font_files, opts.output_dir)
+        write_render_image(font_files[0], opts.output_dir)
 
     log("Done.")
 
