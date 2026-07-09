@@ -117,3 +117,22 @@ def test_malformed_pack_font_json_is_skipped(capsys):
     assert providers[0]["layer"] == "goodpack"
     assert len(providers[0]["tiles"]) > 0
     assert "badpack" in capsys.readouterr().out
+
+
+def test_non_object_pack_font_json_is_skipped(capsys):
+    # Valid JSON but not an object: [] (array), "text" (string), 42 (number)
+    bad_pack = FakeSource("badpack", fonts={
+        "minecraft:default": b"[]",
+    })
+    good_pack = FakeSource("goodpack", fonts={
+        "minecraft:default": font_json_bytes([_bitmap("goodpack:icons.png", ["✔"])]),
+    }, textures={
+        "goodpack:icons.png": make_png_bytes(8, 8, block(0, 0, 4, 8)),
+    })
+
+    providers = collect_pack_providers(AssetStack([_vanilla(), bad_pack, good_pack]))
+
+    assert len(providers) == 1
+    assert providers[0]["layer"] == "goodpack"
+    assert len(providers[0]["tiles"]) > 0
+    assert "badpack" in capsys.readouterr().out
