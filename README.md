@@ -238,27 +238,28 @@ directories. Merge priority matches the game: a pack's providers win over
 vanilla for overlapping codepoints, and vanilla remains the fallback for
 everything else.
 
-Known limitations:
+> [!IMPORTANT]
+> Known limitations:
+> - Only `bitmap` providers are converted. `space`, `ttf`, `unihex`, and
+>   `reference` providers are skipped with a warning.
+> - Packs that define entirely new font IDs are reported but not built; only
+>   `minecraft:default` (plus its `include/` layer), `minecraft:alt`, and
+>   `minecraft:illageralt` are consumed.
+> - Glyph outlines are monochrome. Colored glyph art becomes a single-color
+>   silhouette that takes the surrounding text color (white-on-transparent
+>   icon fonts, like Hypixel SkyBlock's, render exactly as in game).
+> - Pack glyphs do not appear in the `--validate` preview images, which render
+>   a fixed sample text.
+> - Pack refs to vanilla textures outside `textures/font/` cannot be resolved
+>   (the tool only extracts font assets from the client JAR).
+> - Glyph left padding is trimmed and advances derive from the inked width, so
+>   icons centered inside their tile sit further left, with narrower advances,
+>   than in game.
+> - Bold applies a 1 texture-pixel rightward smear. That matches the game for
+>   packs whose tiles render at native size; on high-resolution packs the
+>   game's bold offset is 1 display pixel, so bolded hi-res glyphs come out
+>   slightly heavier here.
 
-- Only `bitmap` providers are converted. `space`, `ttf`, `unihex`, and
-  `reference` providers are skipped with a warning.
-- Packs that define entirely new font IDs are reported but not built; only
-  `minecraft:default` (plus its `include/` layer), `minecraft:alt`, and
-  `minecraft:illageralt` are consumed.
-- Glyph outlines are monochrome. Colored glyph art becomes a single-color
-  silhouette that takes the surrounding text color (white-on-transparent
-  icon fonts, like Hypixel SkyBlock's, render exactly as in game).
-- Pack glyphs do not appear in the `--validate` preview images, which render
-  a fixed sample text.
-- Pack refs to vanilla textures outside `textures/font/` cannot be resolved
-  (the tool only extracts font assets from the client JAR).
-- Glyph left padding is trimmed and advances derive from the inked width, so
-  icons centered inside their tile sit further left, with narrower advances,
-  than in game.
-- Bold applies a 1 texture-pixel rightward smear. That matches the game for
-  packs whose tiles render at native size; on high-resolution packs the
-  game's bold offset is 1 display pixel, so bolded hi-res glyphs come out
-  slightly heavier here.
 
 ## Output
 
