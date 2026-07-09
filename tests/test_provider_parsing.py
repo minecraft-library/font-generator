@@ -95,3 +95,22 @@ def test_bin_providers_carry_grid_fields():
     assert providers[0]["columns"] == 16
     assert providers[0]["rows"] == 16
     assert providers[0]["layer"] == "vanilla"
+
+
+def test_vanilla_default_stack_resolves_jar_textures():
+    os.makedirs("work/assets/minecraft/textures/font", exist_ok=True)
+    png = make_png_bytes(16, 16, block(0, 0, 8, 8))
+    with open("work/assets/minecraft/textures/font/ascii.png", "wb") as f:
+        f.write(png)
+    raw = font_json_bytes([
+        {"type": "bitmap", "file": "minecraft:font/ascii.png", "ascent": 7, "height": 8, "chars": ["\x00\x00"]},
+    ])
+
+    providers = parse_json_providers(raw)
+
+    assert len(providers) == 1
+    assert providers[0]["layer"] == "vanilla"
+    assert providers[0]["columns"] == 2
+    assert providers[0]["rows"] == 1
+    with open(providers[0]["file_path"], "rb") as f:
+        assert f.read() == png
