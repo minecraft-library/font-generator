@@ -8,7 +8,7 @@ from collections import defaultdict, deque, OrderedDict
 from tqdm import tqdm
 from PIL import Image
 from minecraft_fontgen.asset_source import AssetStack, VanillaSource, sanitize_fs_name, split_resource_ref
-from minecraft_fontgen.config import ASCENT, COLUMNS_PER_ROW, DEFAULT_GLYPH_SIZE, INK_ALPHA_THRESHOLD, OUTPUT_DIR, MINECRAFT_JAR_DIR, WORK_DIR, UNITS_PER_EM, TEXTURE_PATH, FONT_STYLES
+from minecraft_fontgen.config import ASCENT, BOLD_PACK_GLYPHS, COLUMNS_PER_ROW, DEFAULT_GLYPH_SIZE, INK_ALPHA_THRESHOLD, OUTPUT_DIR, MINECRAFT_JAR_DIR, WORK_DIR, UNITS_PER_EM, TEXTURE_PATH, FONT_STYLES
 from minecraft_fontgen.functions import get_unicode_codepoint, in_unifont_ranges, log, is_silent, parse_json
 
 
@@ -901,7 +901,7 @@ def _write_tile_svg(grid, size, output_file):
 # === Stage 3: Build unified glyph map
 # ==========================================
 
-def build_glyph_map(providers, unifont_glyphs):
+def build_glyph_map(providers, unifont_glyphs, stack=None):
     """Builds a unified glyph map merging provider glyphs (priority) with unifont fallbacks and alternate fonts."""
     log(f"🧩 Building unified glyph map...")
     glyph_map = {"Regular": OrderedDict(), "Bold": OrderedDict()}
@@ -912,11 +912,15 @@ def build_glyph_map(providers, unifont_glyphs):
             cp = tile["codepoint"]
             for style_key in ("Regular", "Bold"):
                 style = style_key.lower()
+                if style_key == "Bold" and not BOLD_PACK_GLYPHS and tile.get("layer", "vanilla") != "vanilla":
+                    style = "regular"
                 flat_tile = {
                     "unicode": tile["unicode"],
                     "codepoint": cp,
                     "size": tile["size"],
+                    "display_height": tile.get("display_height"),
                     "ascent": tile["ascent"],
+                    "layer": tile.get("layer", "vanilla"),
                     "pixels": tile["pixels"][style],
                     "svg": tile["svg"].get(style) if tile.get("svg") else None,
                     "source": "provider"
@@ -924,7 +928,8 @@ def build_glyph_map(providers, unifont_glyphs):
                 glyph_map[style_key][cp] = flat_tile
 
     provider_count = len(glyph_map["Regular"])
-    log(f"→ 🔣 {provider_count} provider glyphs (priority)")
+    pack_count = sum(1 for t in glyph_map["Regular"].values() if t.get("layer", "vanilla") != "vanilla")
+    log(f"→ 🔣 {provider_count} provider glyphs ({pack_count} from resource packs)")
 
     # 2. Add unifont glyphs (fallback - skip if codepoint exists)
     if unifont_glyphs:
@@ -940,12 +945,13 @@ def build_glyph_map(providers, unifont_glyphs):
         glyph_map[key] = OrderedDict(sorted(glyph_map[key].items()))
 
     # 4. Process alternate fonts (Galactic, Illageralt)
-    for style in FONT_STYLES:
-        if "json_file" not in style or not style["enabled"]:
-            continue
-        overlay = _process_alternate_font(style, glyph_map["Regular"])
-        if overlay is not None:
-            glyph_map[style["name"]] = overlay
+    if stack is not None:
+        for style in FONT_STYLES:
+            if "font_id" not in style or not style["enabled"]:
+                continue
+            overlay = _process_alternate_font(style, glyph_map["Regular"], stack)
+            if overlay is not None:
+                glyph_map[style["name"]] = overlay
 
     # 5. Print summary
     unifont_count = sum(1 for t in glyph_map["Regular"].values() if t["source"] == "unifont")
@@ -989,81 +995,40 @@ def trace_unifont_tiles(unifont_glyphs, bold=False):
 
     return tiles
 
-def _process_alternate_font(alt_config, regular_map):
-    """Processes an alternate font by cloning Regular and overlaying alternate glyphs.
+def _process_alternate_font(alt_config, regular_map, stack):
+    """Builds an alternate-font overlay map (Galactic/Illageralt) from all asset layers.
 
-    Reads the alternate font's JSON provider file to get char mappings, processes
-    its bitmap PNG into tiles, then overlays those tiles onto a copy of the Regular
-    glyph map. Returns the overlay map, or None if the assets are missing.
-    """
+    Collects the font id's providers across the stack (packs override vanilla),
+    slices them with the shared pipeline, and overlays the tiles onto a clone of
+    the Regular map. Codepoints new to the font are appended. Returns None when
+    no layer defines the font or no tiles survive."""
     name = alt_config["name"]
-    json_file = alt_config["json_file"]
+    font_id = alt_config["font_id"]
     map_lowercase = alt_config.get("map_lowercase", False)
 
-    if not os.path.isfile(json_file):
+    providers = []
+    for source_name, raw in stack.font_json_layers(font_id):
+        layer = parse_json_providers(raw, stack, layer_name=sanitize_fs_name(f"{source_name}_{name}"))
+        layer.reverse()  # the game walks a font's providers first-wins; the merge below is last-wins
+        providers += layer
+    if not providers:
         return None
 
-    with open(json_file, "rb") as f:
-        raw_text = f.read().decode("utf-8", errors="surrogatepass")
-    data = parse_json(raw_text)
+    slice_provider_tiles(providers)
 
-    # Find the bitmap provider in the JSON
-    bitmap_provider = None
-    for provider in data.get("providers", []):
-        if provider.get("type") == "bitmap" and "chars" in provider:
-            bitmap_provider = provider
-            break
-
-    if not bitmap_provider:
-        return None
-
-    # Resolve the texture file path
-    file_name = bitmap_provider.get("file", "").split("minecraft:font/")[-1]
-    texture_path = f"{TEXTURE_PATH}/{file_name}"
-    if not os.path.isfile(texture_path):
-        return None
-
-    ascent = bitmap_provider.get("ascent", 7)
-    height = bitmap_provider.get("height", DEFAULT_GLYPH_SIZE)
-    chars = [char for row in bitmap_provider.get("chars", []) for char in row]
-
-    # Read and process the bitmap
-    img = Image.open(texture_path).convert("RGBA")
-    bg = Image.new("RGBA", img.size, (0, 0, 0, 255))
-    img = Image.alpha_composite(bg, img).convert("L")
-    img = Image.eval(img, lambda x: 255 - x)
-    img = img.point(lambda x: 0 if x < 128 else 255, '1')
-
-    img_width, img_height = img.size
-    glyph_width = img_width / COLUMNS_PER_ROW
-
-    # Process each glyph tile
     alt_tiles = {}
-    for i, unicode_char in enumerate(chars):
-        codepoint = get_unicode_codepoint(unicode_char)
-        if codepoint is None or codepoint == 0x0000:
-            continue
-
-        tile_row = i // COLUMNS_PER_ROW
-        tile_column = i % COLUMNS_PER_ROW
-        px, py = (int(tile_column * glyph_width), tile_row * height)
-        tile_img = img.crop((px, py, px + int(glyph_width), py + height))
-
-        bitmap_grid = np.array(tile_img.convert("L"), dtype=int)
-        bitmap_grid = (bitmap_grid < 128).astype(np.uint8)
-        pixel_data = _trace_bitmap_contours2(bitmap_grid, bold=False)
-
-        tile = {
-            "unicode": unicode_char,
-            "codepoint": codepoint,
-            "size": (glyph_width, height),
-            "ascent": ascent,
-            "pixels": pixel_data,
-            "svg": None,
-            "source": "alternate"
-        }
-        alt_tiles[codepoint] = tile
-
+    for provider in providers:
+        for tile in provider["tiles"]:
+            alt_tiles[tile["codepoint"]] = {
+                "unicode": tile["unicode"],
+                "codepoint": tile["codepoint"],
+                "size": tile["size"],
+                "display_height": tile["display_height"],
+                "ascent": tile["ascent"],
+                "pixels": tile["pixels"]["regular"],
+                "svg": None,
+                "source": "alternate"
+            }
     if not alt_tiles:
         return None
 
@@ -1078,16 +1043,18 @@ def _process_alternate_font(alt_config, regular_map):
                     lower_tile["codepoint"] = lower_cp
                     alt_tiles[lower_cp] = lower_tile
 
-    # Clone Regular and overlay alternate tiles
+    # Clone Regular, overlay alternate tiles, and append codepoints new to the font
     overlay_map = OrderedDict()
     for cp, tile in regular_map.items():
-        if cp in alt_tiles:
-            overlay_map[cp] = alt_tiles[cp]
-        else:
-            overlay_map[cp] = tile
+        overlay_map[cp] = alt_tiles.get(cp, tile)
+    new_cps = [cp for cp in alt_tiles if cp not in regular_map]
+    for cp in new_cps:
+        overlay_map[cp] = alt_tiles[cp]
+    if new_cps:
+        overlay_map = OrderedDict(sorted(overlay_map.items()))
 
-    override_count = sum(1 for cp in alt_tiles if cp in regular_map)
-    log(f"→ 🔣 {name}: {len(alt_tiles)} alternate glyphs ({override_count} overriding Regular)")
+    override_count = len(alt_tiles) - len(new_cps)
+    log(f"→ 🔣 {name}: {len(alt_tiles)} alternate glyphs ({override_count} overriding Regular, {len(new_cps)} new)")
 
     return overlay_map
 

@@ -98,7 +98,7 @@ FONT_STYLES = [
         "bold": False,
         "italic": False,
         "pixel_style": "Galactic",
-        "json_file": f"{MINECRAFT_JAR_DIR}/font/alt.json",
+        "font_id": "minecraft:alt",
         "map_lowercase": True,  # Duplicate uppercase glyphs onto lowercase codepoints
         "debug": {
             "svg": False,
@@ -112,7 +112,7 @@ FONT_STYLES = [
         "bold": False,
         "italic": False,
         "pixel_style": "Illageralt",
-        "json_file": f"{MINECRAFT_JAR_DIR}/font/illageralt.json",
+        "font_id": "minecraft:illageralt",
         "map_lowercase": False,
         "debug": {
             "svg": False,
@@ -129,6 +129,7 @@ MAC_EPOCH = 2082844800 # Seconds since 12:00 midnight, January 1, 1904 UTC
 COLUMNS_PER_ROW = 16
 DEFAULT_GLYPH_SIZE = 8
 INK_ALPHA_THRESHOLD = 0  # a pixel is glyph coverage when alpha exceeds this (the game uses any alpha above 0)
+BOLD_PACK_GLYPHS = True  # False keeps pack-layer glyphs un-smeared in the Bold styles
 UNITS_PER_EM = 1024
 ASCENT = (DEFAULT_GLYPH_SIZE - 1) * (UNITS_PER_EM // DEFAULT_GLYPH_SIZE)  # 7 * 128 = 896
 DESCENT = -(UNITS_PER_EM // DEFAULT_GLYPH_SIZE)  # -128
