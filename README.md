@@ -35,6 +35,7 @@ Convert Minecraft's bitmap font glyphs into fully functional OpenType (`.otf`) o
 - **Pixel-perfect tracing** - Flood-fill contour tracing converts bitmap pixels into clean vector outlines
 - **Debug SVG output** - Optionally dump per-glyph SVG files for visual inspection
 - **Non-interactive mode** - Fully scriptable with CLI arguments and environment variables for CI/CD and Docker workflows
+- **Resource pack support** - Merge custom font glyphs from any resource pack (e.g. server packs with icon fonts) into the generated files
 
 ## Getting Started
 
@@ -161,6 +162,7 @@ CLI argument  >  Shell environment variable  >  .env file  >  config.py defaults
 | `--type` | `MCFONT_TYPE` | Font type: `opentype`/`otf` or `truetype`/`ttf` | `opentype` | `opentype` |
 | `--silent` | `MCFONT_SILENT` | Suppress all output except errors | Disabled | `true` |
 | `--validate` | `MCFONT_VALIDATE` | Run FontForge validation after build (requires `fontforge`) | Disabled | `true` |
+| `--resource-pack` | `MCFONT_RESOURCE_PACKS` | Resource pack zip/directory to merge (repeatable; env var is `os.pathsep`-separated) | None | `packs/sb.zip` |
 
 Boolean flags accept `1`, `true`, or `yes`. Valid styles: `regular`, `bold`,
 `italic`, `bolditalic`, `galactic`, `illageralt`.
@@ -206,6 +208,50 @@ you run `python -m minecraft_fontgen --output build`, the output directory will
 be `build`.
 
 </details>
+
+### Resource Packs
+
+Resource packs that add or replace font glyphs (bitmap providers in
+`assets/<namespace>/font/*.json`, or straight texture replacements of the
+vanilla font PNGs) can be merged into the generated fonts:
+
+```bash
+# One pack
+python -m minecraft_fontgen --version 1.21.4 --resource-pack path/to/pack.zip
+
+# Multiple packs: later packs override earlier ones, all packs override vanilla
+python -m minecraft_fontgen --version 1.21.4 --resource-pack base.zip --resource-pack overrides/
+
+# Environment variable form (paths separated by ';' on Windows, ':' elsewhere)
+MCFONT_RESOURCE_PACKS="base.zip;overrides" python -m minecraft_fontgen --version 1.21.4
+```
+
+Packs may be zips (a single nested root folder is tolerated) or unpacked
+directories. Merge priority matches the game: a pack's providers win over
+vanilla for overlapping codepoints, and vanilla remains the fallback for
+everything else.
+
+Known limitations:
+
+- Only `bitmap` providers are converted. `space`, `ttf`, `unihex`, and
+  `reference` providers are skipped with a warning.
+- Packs that define entirely new font IDs are reported but not built; only
+  `minecraft:default` (plus its `include/` layer), `minecraft:alt`, and
+  `minecraft:illageralt` are consumed.
+- Glyph outlines are monochrome. Colored glyph art becomes a single-color
+  silhouette that takes the surrounding text color (white-on-transparent
+  icon fonts, like Hypixel SkyBlock's, render exactly as in game).
+- Pack glyphs do not appear in the `--validate` preview images, which render
+  a fixed sample text.
+- Pack refs to vanilla textures outside `textures/font/` cannot be resolved
+  (the tool only extracts font assets from the client JAR).
+- Glyph left padding is trimmed and advances derive from the inked width, so
+  icons centered inside their tile sit further left, with narrower advances,
+  than in game.
+- Bold applies a 1 texture-pixel rightward smear. That matches the game for
+  packs whose tiles render at native size; on high-resolution packs the
+  game's bold offset is 1 display pixel, so bolded hi-res glyphs come out
+  slightly heavier here.
 
 ## Output
 

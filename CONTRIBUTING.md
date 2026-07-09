@@ -266,8 +266,10 @@ minecraft_fontgen/
 ### Pipeline flow
 
 ```
-parse_args() → clean_directories() → download_minecraft_assets()
-  → parse_provider_file() → build_glyph_map() → create_font_files()
+parse_args() → open_resource_pack() for each --resource-pack (exits cleanly
+  on an invalid pack) → AssetStack([VanillaSource()] + packs) → clean_directories()
+  → download_minecraft_assets() → parse_provider_file() + collect_pack_providers()
+  → build_glyph_map() → stack.close() → create_font_files()
   → validate_fonts()  (optional, with --validate)
 ```
 

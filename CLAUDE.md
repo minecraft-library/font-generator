@@ -31,7 +31,7 @@ MCFONT_VALIDATE=1 python -m minecraft_fontgen --version 1.21.4
 fontforge -lang=py -script minecraft_fontgen/validate_font.py output/Minecraft-Regular.otf
 ```
 
-There are no tests or linting configured.
+Tests live in `tests/` (pytest, installed via `pip install -e .[dev]`; run `.venv/Scripts/python.exe -m pytest`). No linting configured.
 
 ### CLI Arguments and Environment Variables
 
@@ -45,6 +45,7 @@ There are no tests or linting configured.
 | `--type` | `MCFONT_TYPE` | Font type: `opentype`/`otf` or `truetype`/`ttf` | `opentype` |
 | `--silent` | `MCFONT_SILENT` | Suppress output (`1`/`true`/`yes`) | `False` |
 | `--validate` | `MCFONT_VALIDATE` | Run FontForge validation after build (`1`/`true`/`yes`) | `False` |
+| `--resource-pack` | `MCFONT_RESOURCE_PACKS` | Resource pack zip/dir merged into the fonts (repeatable, later wins; env var is os.pathsep-separated) | None |
 
 ## Architecture
 
@@ -58,6 +59,25 @@ The pipeline runs sequentially through six stages:
 4. **Build glyph map** (`minecraft_fontgen.file_io:build_glyph_map`) - Merges provider glyphs (priority) with unifont fallback glyphs into an `OrderedDict` keyed by codepoint, per style (Regular/Bold). Processes alternate fonts (Galactic, Illageralt) by cloning the Regular glyph map and overlaying alternate glyphs from their JSON provider files. Pre-computes scaled coordinates (pixel space to font units) for all glyphs via `precompute_glyph_scaling`
 5. **Create font files** (`minecraft_fontgen.font_creator:create_font_files`) - Batch creates all enabled font styles (Regular, Bold, Italic, BoldItalic, Galactic, Illageralt). Initializes fontTools `TTFont` tables for each style, converts glyphs with a single progress bar across all styles, then finalizes and saves all fonts. Styles whose glyph map is missing (e.g. Galactic on older versions) are gracefully skipped. Returns the list of output file paths
 6. **Validate** (`minecraft_fontgen.functions:validate_fonts`) - Optional, runs only when `--validate` or `MCFONT_VALIDATE=1` is set. Invokes `validate_font.py` via FontForge subprocess on all generated font files. Reports per-glyph validation errors bucketed by type
+
+### Resource Packs (minecraft_fontgen/asset_source.py)
+
+User-supplied packs (zip or directory, `--resource-pack`, repeatable) are opened as
+`AssetSource` layers and stacked with `AssetStack([VanillaSource()] + packs)`; later
+packs take priority. The stack resolves both font JSONs (`font_json_layers`) and
+textures (`materialize_texture`, which writes the winning layer's bytes to
+`work/textures/<ns>/<path>`), so packs can override vanilla textures and reference
+custom namespaces. `collect_pack_providers` in `file_io.py` parses each pack's
+`minecraft:include/default` and `minecraft:default` layers (each layer's provider
+list reversed, converting the game's first-wins provider walk into this codebase's
+last-wins merge) and appends them after the vanilla providers, so packs win
+overlapping codepoints while vanilla remains fallback. Provider dicts carry
+`rows`/`columns` (grid geometry derived from the chars array), `height` (the JSON
+display height, applied as display scaling in `precompute_glyph_scaling`), and
+`layer`. Binarization keys off the alpha channel (luminance fallback for fully
+opaque images). Alternate fonts resolve their `font_id` (`minecraft:alt`,
+`minecraft:illageralt`) through the same stack, so packs can override them too.
+Non-bitmap providers (`space`, `ttf`, `unihex`, `reference`) are warn-skipped.
 
 ### Glyph Processing
 
@@ -114,7 +134,7 @@ Minecraft includes alternate font scripts: Standard Galactic Alphabet (enchantin
 3. The resulting overlay maps are stored under their style name (`"Galactic"`, `"Illageralt"`) in the glyph map dict
 4. If the JSON file doesn't exist (e.g. Minecraft 1.8.9 lacks `alt.json`), the style is silently skipped during both glyph map building and font creation
 
-Configuration lives in `config.py:FONT_STYLES` — alternate styles are identified by the presence of `json_file` and `map_lowercase` keys. Only JSON file paths are stored, not character mappings. Mappings are read from the JSON at runtime.
+Configuration lives in `config.py:FONT_STYLES`: alternate styles are identified by the presence of `json_file` and `map_lowercase` keys. Only JSON file paths are stored, not character mappings. Mappings are read from the JSON at runtime.
 
 ### Unifont Fallback
 
