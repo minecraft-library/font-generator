@@ -19,22 +19,27 @@ def main():
     opts = parse_args()
     set_silent(opts.silent)
 
-    # Open packs before any network or destructive work so bad paths fail fast
+    # Open packs one at a time before any network or destructive work so bad
+    # paths fail fast; close any already-opened source if a later one fails
+    pack_sources = []
     try:
-        pack_sources = [open_resource_pack(p) for p in opts.resource_packs]
+        for p in opts.resource_packs:
+            pack_sources.append(open_resource_pack(p))
     except ValueError as error:
+        for source in pack_sources:
+            source.close()
         log(f"❌ {error}")
         raise SystemExit(1)
-
-    # Clean work and output directories
-    clean_directories(opts.output_dir)
-
-    # Download MC version, extract unifont + JAR assets
-    matched_file, matched_format, unifont_glyphs = download_minecraft_assets(opts.mc_version)
 
     # Layer user resource packs above the vanilla extraction (later packs win)
     stack = AssetStack([VanillaSource()] + pack_sources)
     try:
+        # Clean work and output directories
+        clean_directories(opts.output_dir)
+
+        # Download MC version, extract unifont + JAR assets
+        matched_file, matched_format, unifont_glyphs = download_minecraft_assets(opts.mc_version)
+
         # Parse provider glyphs from JAR bitmap PNGs (includes slicing)
         providers = parse_provider_file(matched_file, matched_format, stack)
 
