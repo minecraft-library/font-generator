@@ -179,3 +179,58 @@ def open_resource_pack(path):
         except (ValueError, AttributeError):
             log(f"→ ⚠️ Pack '{label}' has a malformed pack.mcmeta, continuing anyway")
     return source
+
+
+class VanillaSource(DirAssetSource):
+    """The vanilla layer: assets extracted from the client JAR into the work dir."""
+
+    is_vanilla = True
+
+    def __init__(self, work_dir=WORK_DIR):
+        super().__init__(work_dir, "vanilla")
+
+
+class AssetStack:
+    """Ordered asset layers. Later sources take priority (later --resource-pack flags win)."""
+
+    def __init__(self, sources):
+        self.sources = list(sources)
+
+    def pack_sources(self):
+        return [s for s in self.sources if not s.is_vanilla]
+
+    def font_json_layers(self, font_id):
+        layers = []
+        for source in self.sources:
+            raw = source.get_font_json(font_id)
+            if raw is not None:
+                layers.append((source.name, raw))
+        return layers
+
+    def materialize_texture(self, ref):
+        """Resolves a texture ref through the stack and writes it to a colon-free path.
+
+        Returns the on-disk path under work/textures, or None when no layer has it."""
+        try:
+            namespace, path = split_resource_ref(ref)
+        except ValueError as error:
+            log(f" → ⚠️ Skipping invalid texture reference '{ref}': {error}")
+            return None
+        for source in reversed(self.sources):
+            data = source.get_texture(namespace, path)
+            if data is None:
+                continue
+            dest = os.path.join(RESOLVED_TEXTURE_DIR, namespace, *path.split("/"))
+            root = os.path.realpath(RESOLVED_TEXTURE_DIR)
+            if not os.path.realpath(dest).startswith(root + os.sep):
+                log(f" → ⚠️ Skipping texture '{ref}' (path escapes the work directory)")
+                return None
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, "wb") as f:
+                f.write(data)
+            return dest
+        return None
+
+    def close(self):
+        for source in self.sources:
+            source.close()
