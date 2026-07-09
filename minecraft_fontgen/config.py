@@ -128,6 +128,7 @@ MAC_EPOCH = 2082844800 # Seconds since 12:00 midnight, January 1, 1904 UTC
 # Glyph
 COLUMNS_PER_ROW = 16
 DEFAULT_GLYPH_SIZE = 8
+INK_ALPHA_THRESHOLD = 0  # a pixel is glyph coverage when alpha exceeds this (the game uses any alpha above 0)
 UNITS_PER_EM = 1024
 ASCENT = (DEFAULT_GLYPH_SIZE - 1) * (UNITS_PER_EM // DEFAULT_GLYPH_SIZE)  # 7 * 128 = 896
 DESCENT = -(UNITS_PER_EM // DEFAULT_GLYPH_SIZE)  # -128

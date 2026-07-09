@@ -4,7 +4,6 @@ from helpers import block, make_png_bytes
 
 import numpy as np
 import os
-import pytest
 
 
 def _provider(png_bytes, chars_rows, columns, rows, height=7, ascent=7, name="p"):
@@ -73,7 +72,6 @@ def test_grid_larger_than_texture_skips_provider(capsys):
     assert "smaller than" in capsys.readouterr().out
 
 
-@pytest.mark.xfail(reason="binarize None guard lands in task 8", strict=True)
 def test_missing_texture_skips_provider(capsys):
     provider = _provider(make_png_bytes(8, 8, []), ["a"], columns=1, rows=1)
     os.remove(provider["file_path"])

@@ -8,7 +8,7 @@ from collections import defaultdict, deque, OrderedDict
 from tqdm import tqdm
 from PIL import Image
 from minecraft_fontgen.asset_source import AssetStack, VanillaSource, sanitize_fs_name, split_resource_ref
-from minecraft_fontgen.config import ASCENT, COLUMNS_PER_ROW, DEFAULT_GLYPH_SIZE, OUTPUT_DIR, MINECRAFT_JAR_DIR, WORK_DIR, UNITS_PER_EM, TEXTURE_PATH, FONT_STYLES
+from minecraft_fontgen.config import ASCENT, COLUMNS_PER_ROW, DEFAULT_GLYPH_SIZE, INK_ALPHA_THRESHOLD, OUTPUT_DIR, MINECRAFT_JAR_DIR, WORK_DIR, UNITS_PER_EM, TEXTURE_PATH, FONT_STYLES
 from minecraft_fontgen.functions import get_unicode_codepoint, in_unifont_ranges, log, is_silent, parse_json
 
 
@@ -293,25 +293,31 @@ def slice_provider_tiles(providers):
     log(f" → 🔢 Sliced {total_tiles} glyphs across {len(providers)} providers...")
 
 def binarize_provider_bitmap(provider):
-    """Reads a provider PNG, composites over black, inverts to black-on-white, and binarizes."""
+    """Reads a provider PNG and binarizes it to black ink on white.
+
+    Coverage follows the game's rule: a pixel is part of the glyph when its
+    alpha exceeds INK_ALPHA_THRESHOLD. Images with no transparency at all fall
+    back to the legacy luminance threshold. Returns None when the texture file
+    is missing."""
+    if not os.path.isfile(provider["file_path"]):
+        return None
     img = Image.open(provider["file_path"]).convert("RGBA")
 
-    # Composite white glyphs over black background
-    bg = Image.new("RGBA", img.size, (0, 0, 0, 255)) # Black background
-    img = Image.alpha_composite(bg, img).convert("L") # 1-bit grayscale
-
-    # Invert white glyphs to black
-    img = Image.eval(img, lambda x: 255 - x)
-
-    # Binarize to 1-bit: make black glyphs (0) on white (255)
-    img = img.point(lambda x: 0 if x < 128 else 255, '1')
+    alpha = img.getchannel("A")
+    if alpha.getextrema() == (255, 255):
+        bg = Image.new("RGBA", img.size, (0, 0, 0, 255))
+        flat = Image.alpha_composite(bg, img).convert("L")
+        flat = Image.eval(flat, lambda x: 255 - x)
+        binary = flat.point(lambda x: 0 if x < 128 else 255, '1')
+    else:
+        binary = alpha.point(lambda a: 0 if a > INK_ALPHA_THRESHOLD else 255, '1')
 
     # Copy original and save grayscale
     output_file = provider["output"] + "/" + provider["name"]
     shutil.copyfile(provider["file_path"], output_file + ".png")
-    img.save(f"{output_file}_grayscale.png")
+    binary.save(f"{output_file}_grayscale.png")
 
-    return img
+    return binary
 
 def crop_tile(bitmap, tile, save=True):
     """Crops a single glyph tile from a full provider bitmap and optionally saves it to disk."""
