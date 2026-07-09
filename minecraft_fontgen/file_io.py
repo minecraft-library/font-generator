@@ -7,8 +7,9 @@ import numpy as np
 from collections import defaultdict, deque, OrderedDict
 from tqdm import tqdm
 from PIL import Image
-from minecraft_fontgen.config import ASCENT, COLUMNS_PER_ROW, DEFAULT_GLYPH_SIZE, OUTPUT_DIR, MINECRAFT_JAR_DIR, WORK_DIR, UNITS_PER_EM, TEXTURE_PATH, FONT_STYLES
-from minecraft_fontgen.functions import get_unicode_codepoint, in_unifont_ranges, log, is_silent, parse_json
+from minecraft_fontgen.asset_source import AssetStack, VanillaSource, split_resource_ref
+from minecraft_fontgen.config import ALT_FONT_IDS, ASCENT, BOLD_PACK_GLYPHS, DEFAULT_GLYPH_SIZE, INK_ALPHA_THRESHOLD, OUTPUT_DIR, MINECRAFT_JAR_DIR, PACK_FONT_IDS, WORK_DIR, UNITS_PER_EM, TEXTURE_PATH, FONT_STYLES
+from minecraft_fontgen.functions import get_unicode_codepoint, in_unifont_ranges, log, is_silent, parse_json, sanitize_fs_name
 
 
 # ==========================================
@@ -33,7 +34,7 @@ def clean_directories(output_dir=None):
 # === Stage 2: Parse providers + slice tiles
 # ==========================================
 
-def parse_provider_file(file, format):
+def parse_provider_file(file, format, stack=None):
     """Reads a font provider file, parses it by format, and slices into glyph tiles."""
     log(f"🧩 Parsing {file}...")
     with open(file, "rb") as f:
@@ -43,11 +44,44 @@ def parse_provider_file(file, format):
     if format == "bin":
         providers = parse_bin_providers(raw_bytes)
     elif format == "json":
-        providers = parse_json_providers(raw_bytes)
+        providers = parse_json_providers(raw_bytes, stack)
     else:
         raise ValueError(f"Unsupported file format: {format}")
 
     slice_provider_tiles(providers)
+    return providers
+
+
+def collect_pack_providers(stack):
+    """Parses and slices the default-font providers contributed by resource packs.
+
+    The returned list is ordered so that appending it after the vanilla
+    providers reproduces the game's priority under build_glyph_map's last-wins
+    merge: later packs beat earlier packs, every pack beats vanilla, a pack's
+    default.json beats its include/default.json, and within one file the
+    first-listed provider wins."""
+    providers = []
+    for font_id in PACK_FONT_IDS:
+        for source in stack.pack_sources():
+            raw = source.get_font_json(font_id)
+            if raw is None:
+                continue
+            try:
+                layer = parse_json_providers(raw, stack, layer_name=source.name)
+            except (ValueError, AttributeError) as error:
+                log(f" → ⚠️ Skipping malformed font JSON '{font_id}' in pack '{source.name}': {error}")
+                continue
+            layer.reverse()  # the game walks a font's providers first-wins; the merge is last-wins
+            providers += layer
+
+    if providers:
+        slice_provider_tiles(providers)
+
+    for source in stack.pack_sources():
+        for font_id in source.list_font_ids():
+            if font_id not in PACK_FONT_IDS and font_id not in ALT_FONT_IDS:
+                log(f"→ ⚠️ Pack '{source.name}' defines font '{font_id}', which this tool does not build")
+
     return providers
 
 def parse_bin_providers(byte_data):
@@ -96,6 +130,9 @@ def parse_bin_providers(byte_data):
             providers.append({
                 "ascent": 15,
                 "height": 16,
+                "rows": 16,
+                "columns": 16,
+                "layer": "vanilla",
                 "chars": chars,
                 "file_name": page_file,
                 "file_path": page_path,
@@ -124,6 +161,9 @@ def parse_bin_providers(byte_data):
         providers.append({
             "ascent": 7,
             "height": 8,
+            "rows": 16,
+            "columns": 16,
+            "layer": "vanilla",
             "chars": chars,
             "file_name": ascii_file,
             "file_path": ascii_path,
@@ -134,36 +174,82 @@ def parse_bin_providers(byte_data):
 
     return providers
 
-def parse_json_providers(byte_data):
-    """Parses the JSON font provider format (default.json) into a list of provider dicts."""
-    raw_text = byte_data.decode("utf-8", errors="surrogatepass")
+def parse_json_providers(byte_data, stack=None, layer_name="vanilla"):
+    """Parses the JSON font provider format into a list of provider dicts.
+
+    Texture references resolve through the asset stack, so resource packs can
+    override vanilla textures and reference their own namespaces."""
+    if stack is None:
+        stack = AssetStack([VanillaSource()])
+    raw_text = byte_data.decode("utf-8", errors="surrogatepass").lstrip("\ufeff")
     data = parse_json(raw_text)
 
-    log("→ 🛠️ Parsing bitmap providers...")
+    log(f"→ 🛠️ Parsing bitmap providers ({layer_name})...")
     providers = []
-    for provider in data.get("providers", []):
-        if provider.get("type") == "bitmap" and "chars" in provider:
-            file_name = provider.get("file", "minecraft:font/").split("minecraft:font/")[-1]
-            name = os.path.splitext(file_name)[0]
-            output = f"{WORK_DIR}/glyphs/{name}"
+    for index, provider in enumerate(data.get("providers", [])):
+        provider_type = provider.get("type")
+        if provider_type != "bitmap":
+            log(f" → ⚠️ Skipping unsupported '{provider_type}' provider in {layer_name} (only bitmap providers are converted)")
+            continue
 
-            # Create provider directory
-            os.makedirs(output, exist_ok=True)
+        rows = provider.get("chars", [])
+        if not isinstance(rows, list) or any(not isinstance(row, str) for row in rows):
+            log(f" → ⚠️ Skipping bitmap provider {index} in {layer_name} (chars grid is not a list of strings)")
+            continue
+        if not rows or not rows[0]:
+            log(f" → ⚠️ Skipping bitmap provider {index} in {layer_name} (no chars grid)")
+            continue
+        if any(len(row) != len(rows[0]) for row in rows):
+            log(f" → ⚠️ Skipping bitmap provider {index} in {layer_name} (chars rows have unequal lengths)")
+            continue
 
-            # Read unicode characters
-            chars = [char for row in provider.get("chars", []) for char in row]
-            log(f" → 🔢 Detected {len(chars)} unicode characters in '{name}'...")
+        if "height" in provider and type(provider["height"]) not in (int, float):
+            log(f" → ⚠️ Skipping bitmap provider {index} in {layer_name} (height {provider['height']} is not a number)")
+            continue
+        height = provider.get("height", DEFAULT_GLYPH_SIZE)
+        if height <= 0:
+            log(f" → ⚠️ Skipping bitmap provider {index} in {layer_name} (height {height} is not positive)")
+            continue
+        if "ascent" in provider and type(provider["ascent"]) not in (int, float):
+            log(f" → ⚠️ Skipping bitmap provider {index} in {layer_name} (ascent {provider['ascent']} is not a number)")
+            continue
+        if "ascent" not in provider:
+            log(f" → ⚠️ Bitmap provider {index} in {layer_name} has no ascent, defaulting to 0")
+        ascent = provider.get("ascent", 0)
+        if ascent > height:
+            log(f" → ⚠️ Skipping bitmap provider {index} in {layer_name} (ascent {ascent} exceeds height {height})")
+            continue
 
-            providers.append({
-                "ascent": provider.get("ascent", 0),
-                "height": provider.get("height", DEFAULT_GLYPH_SIZE),
-                "chars": chars,
-                "file_name": file_name,
-                "file_path": f"{MINECRAFT_JAR_DIR}/textures/font/{file_name}",
-                "name": name,
-                "output": output,
-                "tiles": []
-            })
+        ref = provider.get("file")
+        if not ref:
+            log(f" → ⚠️ Skipping bitmap provider {index} in {layer_name} (no file reference)")
+            continue
+        file_path = stack.materialize_texture(ref)
+        if file_path is None:
+            log(f" → ⚠️ Skipping bitmap provider {index} in {layer_name} (texture '{ref}' not found in any layer)")
+            continue
+
+        namespace, rel_path = split_resource_ref(ref)
+        name = sanitize_fs_name(f"{layer_name}_{namespace}_{os.path.splitext(rel_path)[0]}_{index}")
+        output = f"{WORK_DIR}/glyphs/{name}"
+        os.makedirs(output, exist_ok=True)
+
+        chars = [char for row in rows for char in row]
+        log(f" → 🔢 Detected {len(chars)} unicode characters in '{name}'...")
+
+        providers.append({
+            "ascent": ascent,
+            "height": height,
+            "rows": len(rows),
+            "columns": len(rows[0]),
+            "chars": chars,
+            "file_name": ref,
+            "file_path": file_path,
+            "name": name,
+            "output": output,
+            "layer": layer_name,
+            "tiles": []
+        })
 
     return providers
 
@@ -178,11 +264,25 @@ def slice_provider_tiles(providers):
 
     for provider in providers:
         bitmap = binarize_provider_bitmap(provider)
+        if bitmap is None:
+            log(f" → ⚠️ Skipping '{provider['name']}' (texture missing: {provider['file_path']})")
+            provider["tiles"] = []
+            continue
         tiles = []
 
-        # Calculate tile dimensions
+        # Calculate tile dimensions from the chars grid (the game divides the
+        # texture evenly by the grid; the JSON height field is display scaling)
         width, height = bitmap.size
-        glyph_width = width / COLUMNS_PER_ROW
+        columns = provider["columns"]
+        rows = provider["rows"]
+        glyph_width = width // columns
+        tile_px_height = height // rows
+        if glyph_width == 0 or tile_px_height == 0:
+            log(f" → ⚠️ Skipping '{provider['name']}' (texture {width}x{height} is smaller than its {columns}x{rows} chars grid)")
+            provider["tiles"] = []
+            continue
+        if width % columns or height % rows:
+            log(f" → ⚠️ '{provider['name']}': texture {width}x{height} does not divide evenly into a {columns}x{rows} grid")
 
         with tqdm(enumerate(provider["chars"]), total=len(provider["chars"]),
                   desc=f" → 🔣 {provider['file_name']}", unit="tile",
@@ -197,13 +297,15 @@ def slice_provider_tiles(providers):
                 tiles_progress.set_description(f" → 🔣 0x{codepoint:02X}")
 
                 # Collate tile data
-                tile_row = i // COLUMNS_PER_ROW
-                tile_column = i % COLUMNS_PER_ROW
+                tile_row = i // columns
+                tile_column = i % columns
                 tile = {
                     "unicode": unicode,
                     "codepoint": codepoint,
-                    "size": (glyph_width, provider.get("height")),
+                    "size": (glyph_width, tile_px_height),
+                    "display_height": provider["height"],
                     "ascent": provider.get("ascent", 0),
+                    "layer": provider.get("layer", "vanilla"),
                     "location": (tile_column, tile_row),
                     "output": f"{provider['output']}/tiles/{tile_row:02}_{tile_column:02}_{codepoint:04X}"
                 }
@@ -233,25 +335,31 @@ def slice_provider_tiles(providers):
     log(f" → 🔢 Sliced {total_tiles} glyphs across {len(providers)} providers...")
 
 def binarize_provider_bitmap(provider):
-    """Reads a provider PNG, composites over black, inverts to black-on-white, and binarizes."""
+    """Reads a provider PNG and binarizes it to black ink on white.
+
+    Coverage follows the game's rule: a pixel is part of the glyph when its
+    alpha exceeds INK_ALPHA_THRESHOLD. Images with no transparency at all fall
+    back to the legacy luminance threshold. Returns None when the texture file
+    is missing."""
+    if not os.path.isfile(provider["file_path"]):
+        return None
     img = Image.open(provider["file_path"]).convert("RGBA")
 
-    # Composite white glyphs over black background
-    bg = Image.new("RGBA", img.size, (0, 0, 0, 255)) # Black background
-    img = Image.alpha_composite(bg, img).convert("L") # 1-bit grayscale
-
-    # Invert white glyphs to black
-    img = Image.eval(img, lambda x: 255 - x)
-
-    # Binarize to 1-bit: make black glyphs (0) on white (255)
-    img = img.point(lambda x: 0 if x < 128 else 255, '1')
+    alpha = img.getchannel("A")
+    if alpha.getextrema() == (255, 255):
+        bg = Image.new("RGBA", img.size, (0, 0, 0, 255))
+        flat = Image.alpha_composite(bg, img).convert("L")
+        flat = Image.eval(flat, lambda x: 255 - x)
+        binary = flat.point(lambda x: 0 if x < 128 else 255, '1')
+    else:
+        binary = alpha.point(lambda a: 0 if a > INK_ALPHA_THRESHOLD else 255, '1')
 
     # Copy original and save grayscale
     output_file = provider["output"] + "/" + provider["name"]
     shutil.copyfile(provider["file_path"], output_file + ".png")
-    img.save(f"{output_file}_grayscale.png")
+    binary.save(f"{output_file}_grayscale.png")
 
-    return img
+    return binary
 
 def crop_tile(bitmap, tile, save=True):
     """Crops a single glyph tile from a full provider bitmap and optionally saves it to disk."""
@@ -797,6 +905,7 @@ def _trace_bitmap_contours2(bitmap_grid, bold: bool = False):
         "grid": pixel_grid,
         "width": (max_x - min_x + 1),
         "lsb": min_x,
+        "empty": len(col_ones) == 0,
         "advance": (min_x + glyph_width + 1),
         "paths": paths,
         "holes": holes
@@ -834,7 +943,7 @@ def _write_tile_svg(grid, size, output_file):
 # === Stage 3: Build unified glyph map
 # ==========================================
 
-def build_glyph_map(providers, unifont_glyphs):
+def build_glyph_map(providers, unifont_glyphs, stack=None):
     """Builds a unified glyph map merging provider glyphs (priority) with unifont fallbacks and alternate fonts."""
     log(f"🧩 Building unified glyph map...")
     glyph_map = {"Regular": OrderedDict(), "Bold": OrderedDict()}
@@ -845,11 +954,15 @@ def build_glyph_map(providers, unifont_glyphs):
             cp = tile["codepoint"]
             for style_key in ("Regular", "Bold"):
                 style = style_key.lower()
+                if style_key == "Bold" and not BOLD_PACK_GLYPHS and tile.get("layer", "vanilla") != "vanilla":
+                    style = "regular"
                 flat_tile = {
                     "unicode": tile["unicode"],
                     "codepoint": cp,
                     "size": tile["size"],
+                    "display_height": tile.get("display_height"),
                     "ascent": tile["ascent"],
+                    "layer": tile.get("layer", "vanilla"),
                     "pixels": tile["pixels"][style],
                     "svg": tile["svg"].get(style) if tile.get("svg") else None,
                     "source": "provider"
@@ -857,7 +970,8 @@ def build_glyph_map(providers, unifont_glyphs):
                 glyph_map[style_key][cp] = flat_tile
 
     provider_count = len(glyph_map["Regular"])
-    log(f"→ 🔣 {provider_count} provider glyphs (priority)")
+    pack_count = sum(1 for t in glyph_map["Regular"].values() if t.get("layer", "vanilla") != "vanilla")
+    log(f"→ 🔣 {provider_count} provider glyphs ({pack_count} from resource packs)")
 
     # 2. Add unifont glyphs (fallback - skip if codepoint exists)
     if unifont_glyphs:
@@ -873,12 +987,13 @@ def build_glyph_map(providers, unifont_glyphs):
         glyph_map[key] = OrderedDict(sorted(glyph_map[key].items()))
 
     # 4. Process alternate fonts (Galactic, Illageralt)
-    for style in FONT_STYLES:
-        if "json_file" not in style or not style["enabled"]:
-            continue
-        overlay = _process_alternate_font(style, glyph_map["Regular"])
-        if overlay is not None:
-            glyph_map[style["name"]] = overlay
+    if stack is not None:
+        for style in FONT_STYLES:
+            if "font_id" not in style or not style["enabled"]:
+                continue
+            overlay = _process_alternate_font(style, glyph_map["Regular"], stack)
+            if overlay is not None:
+                glyph_map[style["name"]] = overlay
 
     # 5. Print summary
     unifont_count = sum(1 for t in glyph_map["Regular"].values() if t["source"] == "unifont")
@@ -922,81 +1037,44 @@ def trace_unifont_tiles(unifont_glyphs, bold=False):
 
     return tiles
 
-def _process_alternate_font(alt_config, regular_map):
-    """Processes an alternate font by cloning Regular and overlaying alternate glyphs.
+def _process_alternate_font(alt_config, regular_map, stack):
+    """Builds an alternate-font overlay map (Galactic/Illageralt) from all asset layers.
 
-    Reads the alternate font's JSON provider file to get char mappings, processes
-    its bitmap PNG into tiles, then overlays those tiles onto a copy of the Regular
-    glyph map. Returns the overlay map, or None if the assets are missing.
-    """
+    Collects the font id's providers across the stack (packs override vanilla),
+    slices them with the shared pipeline, and overlays the tiles onto a clone of
+    the Regular map. Codepoints new to the font are appended. Returns None when
+    no layer defines the font or no tiles survive."""
     name = alt_config["name"]
-    json_file = alt_config["json_file"]
+    font_id = alt_config["font_id"]
     map_lowercase = alt_config.get("map_lowercase", False)
 
-    if not os.path.isfile(json_file):
-        return None
-
-    with open(json_file, "rb") as f:
-        raw_text = f.read().decode("utf-8", errors="surrogatepass")
-    data = parse_json(raw_text)
-
-    # Find the bitmap provider in the JSON
-    bitmap_provider = None
-    for provider in data.get("providers", []):
-        if provider.get("type") == "bitmap" and "chars" in provider:
-            bitmap_provider = provider
-            break
-
-    if not bitmap_provider:
-        return None
-
-    # Resolve the texture file path
-    file_name = bitmap_provider.get("file", "").split("minecraft:font/")[-1]
-    texture_path = f"{TEXTURE_PATH}/{file_name}"
-    if not os.path.isfile(texture_path):
-        return None
-
-    ascent = bitmap_provider.get("ascent", 7)
-    height = bitmap_provider.get("height", DEFAULT_GLYPH_SIZE)
-    chars = [char for row in bitmap_provider.get("chars", []) for char in row]
-
-    # Read and process the bitmap
-    img = Image.open(texture_path).convert("RGBA")
-    bg = Image.new("RGBA", img.size, (0, 0, 0, 255))
-    img = Image.alpha_composite(bg, img).convert("L")
-    img = Image.eval(img, lambda x: 255 - x)
-    img = img.point(lambda x: 0 if x < 128 else 255, '1')
-
-    img_width, img_height = img.size
-    glyph_width = img_width / COLUMNS_PER_ROW
-
-    # Process each glyph tile
-    alt_tiles = {}
-    for i, unicode_char in enumerate(chars):
-        codepoint = get_unicode_codepoint(unicode_char)
-        if codepoint is None or codepoint == 0x0000:
+    providers = []
+    for source_name, raw in stack.font_json_layers(font_id):
+        try:
+            layer = parse_json_providers(raw, stack, layer_name=sanitize_fs_name(f"{source_name}_{name}"))
+        except (ValueError, AttributeError) as error:
+            log(f" → ⚠️ Skipping malformed font JSON '{font_id}' in layer '{source_name}': {error}")
             continue
+        layer.reverse()  # the game walks a font's providers first-wins; the merge below is last-wins
+        providers += layer
+    if not providers:
+        return None
 
-        tile_row = i // COLUMNS_PER_ROW
-        tile_column = i % COLUMNS_PER_ROW
-        px, py = (int(tile_column * glyph_width), tile_row * height)
-        tile_img = img.crop((px, py, px + int(glyph_width), py + height))
+    slice_provider_tiles(providers)
 
-        bitmap_grid = np.array(tile_img.convert("L"), dtype=int)
-        bitmap_grid = (bitmap_grid < 128).astype(np.uint8)
-        pixel_data = _trace_bitmap_contours2(bitmap_grid, bold=False)
-
-        tile = {
-            "unicode": unicode_char,
-            "codepoint": codepoint,
-            "size": (glyph_width, height),
-            "ascent": ascent,
-            "pixels": pixel_data,
-            "svg": None,
-            "source": "alternate"
-        }
-        alt_tiles[codepoint] = tile
-
+    alt_tiles = {}
+    for provider in providers:
+        for tile in provider["tiles"]:
+            alt_tiles[tile["codepoint"]] = {
+                "unicode": tile["unicode"],
+                "codepoint": tile["codepoint"],
+                "size": tile["size"],
+                "display_height": tile["display_height"],
+                "ascent": tile["ascent"],
+                "pixels": tile["pixels"]["regular"],
+                "svg": None,
+                "source": "alternate"
+            }
     if not alt_tiles:
         return None
 
@@ -1011,16 +1089,18 @@ def _process_alternate_font(alt_config, regular_map):
                     lower_tile["codepoint"] = lower_cp
                     alt_tiles[lower_cp] = lower_tile
 
-    # Clone Regular and overlay alternate tiles
+    # Clone Regular, overlay alternate tiles, and append codepoints new to the font
     overlay_map = OrderedDict()
     for cp, tile in regular_map.items():
-        if cp in alt_tiles:
-            overlay_map[cp] = alt_tiles[cp]
-        else:
-            overlay_map[cp] = tile
+        overlay_map[cp] = alt_tiles.get(cp, tile)
+    new_cps = [cp for cp in alt_tiles if cp not in regular_map]
+    for cp in new_cps:
+        overlay_map[cp] = alt_tiles[cp]
+    if new_cps:
+        overlay_map = OrderedDict(sorted(overlay_map.items()))
 
-    override_count = sum(1 for cp in alt_tiles if cp in regular_map)
-    log(f"→ 🔣 {name}: {len(alt_tiles)} alternate glyphs ({override_count} overriding Regular)")
+    override_count = len(alt_tiles) - len(new_cps)
+    log(f"→ 🔣 {name}: {len(alt_tiles)} alternate glyphs ({override_count} overriding Regular, {len(new_cps)} new)")
 
     return overlay_map
 
@@ -1037,24 +1117,37 @@ def precompute_glyph_scaling(glyph_map):
             for cp, tile in glyph_map[style_key].items():
                 progress.update(1)
 
-                # Compute scale factor.
-                # Provider glyphs use a uniform pixel scale (UNITS_PER_EM /
-                # DEFAULT_GLYPH_SIZE = 128) so that 1 Minecraft pixel = 1 font
-                # unit regardless of provider height.  This keeps the base
-                # character of accented glyphs (height=12) the same size as the
-                # equivalent standard glyph (height=8), with accents extending
-                # above the normal ascent line.
+                # Scale factor.
+                # Tiles carrying display_height use the game's bitmap-provider
+                # semantics: the tile renders display_height virtual pixels
+                # tall (display_scale = display_height / tile pixel height)
+                # with its top edge ascent virtual pixels above the baseline.
+                # Negative ascent is legal and hangs the glyph below the
+                # baseline. Every vanilla provider has display_height equal to
+                # its tile pixel height, so this reduces to the legacy uniform
+                # 128 units per pixel.
                 # Unifont fallback glyphs use ASCENT / ascent to compress 16px
                 # rows into the same visual space as 8px provider rows.
                 width, height = tile["size"]
                 ascent = tile.get("ascent", 0)
+                display_height = tile.get("display_height")
+                display_scale = None
                 if tile.get("source") == "unifont" and ascent > 0:
                     scale = ASCENT / ascent
+                elif display_height is not None:
+                    display_scale = display_height / height if height else 1.0
+                    scale = (UNITS_PER_EM / DEFAULT_GLYPH_SIZE) * display_scale
                 else:
                     scale = UNITS_PER_EM / DEFAULT_GLYPH_SIZE
                 tile["units_per_pixel"] = scale
 
                 pixels = tile.get("pixels")
+                if display_scale is not None and pixels:
+                    ink_width = 0 if pixels.get("empty") else pixels.get("width", 0)
+                    tile["advance_units"] = int(
+                        (math.floor(0.5 + ink_width * display_scale) + 1)
+                        * (UNITS_PER_EM / DEFAULT_GLYPH_SIZE))
+
                 if not pixels:
                     tile["scaled"] = {"outer": [], "holes": []}
                     continue
@@ -1071,7 +1164,12 @@ def precompute_glyph_scaling(glyph_map):
                     continue
 
                 min_x = min(x for x, y in all_points)
-                descender_offset = ascent if ascent > 0 else ASCENT / scale
+                if display_scale is not None:
+                    descender_offset = ascent * height / display_height
+                elif ascent > 0:
+                    descender_offset = ascent
+                else:
+                    descender_offset = ASCENT / scale
 
                 def transform(pt, _min_x=min_x, _s=scale, _do=descender_offset):
                     x, y = pt

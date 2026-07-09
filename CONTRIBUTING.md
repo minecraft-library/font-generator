@@ -239,9 +239,10 @@ A brief overview to help you find your way around the codebase:
 
 ```
 minecraft_fontgen/
-├── main.py             # Pipeline entry point (clean → download → parse → build → create)
+├── main.py             # Pipeline entry point (open packs → clean → download → parse → build → create)
 ├── cli.py              # Argument parsing and env var resolution
 ├── config.py           # All constants and runtime configuration
+├── asset_source.py     # Resource pack sources (dir/zip) and the layered asset stack
 ├── piston.py           # Mojang Piston API interaction, JAR/unifont downloading
 ├── file_io.py          # Bitmap slicing, contour tracing, glyph map building
 ├── font_creator.py     # Batch font file creation across all styles
@@ -266,8 +267,10 @@ minecraft_fontgen/
 ### Pipeline flow
 
 ```
-parse_args() → clean_directories() → download_minecraft_assets()
-  → parse_provider_file() → build_glyph_map() → create_font_files()
+parse_args() → open_resource_pack() for each --resource-pack (exits cleanly
+  on an invalid pack) → AssetStack([VanillaSource()] + packs) → clean_directories()
+  → download_minecraft_assets() → parse_provider_file() + collect_pack_providers()
+  → build_glyph_map() → stack.close() → create_font_files()
   → validate_fonts()  (optional, with --validate)
 ```
 
