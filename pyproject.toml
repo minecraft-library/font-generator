@@ -30,5 +30,15 @@ dependencies = [
 [project.scripts]
 minecraft-font-generator = "minecraft_fontgen.main:main"
 
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["minecraft_fontgen*"]
+
 [tool.setuptools.dynamic]
 version = { attr = "minecraft_fontgen.config.VERSION" }
