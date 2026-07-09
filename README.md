@@ -97,7 +97,7 @@ The interactive prompt supports the following commands:
 
 | Command | Description |
 |---------|-------------|
-| `<version>` | Enter a version number directly (e.g., `1.21.4`) |
+| `<version>` | Enter a version number directly (e.g., `latest`) |
 | `r` or `releases` | List all available release versions |
 | `s` or `snapshots` | List all available snapshot versions |
 | `h`, `?`, or `help` | Show help |
@@ -110,13 +110,13 @@ upfront to skip the interactive prompt entirely:
 
 ```bash
 # Via CLI argument
-python -m minecraft_fontgen --version 1.21.4
+python -m minecraft_fontgen --version latest
 
 # Via environment variable
-MCFONT_VERSION=1.21.4 python -m minecraft_fontgen
+MCFONT_VERSION=latest python -m minecraft_fontgen
 
 # Combine multiple options
-python -m minecraft_fontgen --version 1.21.4 --styles regular,bold --output dist/fonts --silent
+python -m minecraft_fontgen --version latest --styles regular,bold --output dist/fonts --silent
 ```
 
 ### IntelliJ IDEA
@@ -140,7 +140,7 @@ Python virtual environment with these environment variables pre-set:
 | `MCFONT_VALIDATE` | `1` | Runs FontForge validation after build |
 | `PYTHONUNBUFFERED` | `1` | Ensures real-time console output |
 
-To pass additional arguments (e.g. `--version 1.21.4`), open the configuration
+To pass additional arguments (e.g. `--version latest`), open the configuration
 editor (**Run > Edit Configurations**) and add them to the **Parameters** field.
 You can also add or override environment variables in the **Environment
 variables** section of the same dialog.
@@ -156,7 +156,7 @@ CLI argument  >  Shell environment variable  >  .env file  >  config.py defaults
 
 | CLI | Env Var | Description | Default | Example |
 |-----|---------|-------------|---------|---------|
-| `--version` | `MCFONT_VERSION` | Minecraft version to compile (skips interactive prompt) | Interactive prompt | `1.21.4` |
+| `--version` | `MCFONT_VERSION` | Minecraft version to compile (skips interactive prompt) | Interactive prompt | `latest` |
 | `--output` | `MCFONT_OUTPUT` | Directory for generated font files | `output` | `dist/fonts` |
 | `--styles` | `MCFONT_STYLES` | Comma-separated font styles to generate | All enabled in `config.py` | `regular,bold` |
 | `--type` | `MCFONT_TYPE` | Font type: `opentype`/`otf` or `truetype`/`ttf` | `opentype` | `opentype` |
@@ -175,16 +175,16 @@ python -m minecraft_fontgen --styles regular,bold
 python -m minecraft_fontgen --output build/fonts
 
 # Silent mode for scripts
-python -m minecraft_fontgen --silent --version 1.21.4
+python -m minecraft_fontgen --silent --version latest
 
 # Using environment variables
-MCFONT_VERSION=1.21.4 MCFONT_STYLES=regular,bold python -m minecraft_fontgen
+MCFONT_VERSION=latest MCFONT_STYLES=regular,bold python -m minecraft_fontgen
 
 # One resource pack
-python -m minecraft_fontgen --version 1.21.4 --resource-pack path/to/pack.zip
+python -m minecraft_fontgen --version latest --resource-pack path/to/pack.zip
 
 # Multiple resource packs (later packs override earlier ones)
-python -m minecraft_fontgen --version 1.21.4 --resource-pack base.zip --resource-pack overrides/
+python -m minecraft_fontgen --version latest --resource-pack base.zip --resource-pack overrides/
 ```
 
 > [!NOTE]
@@ -200,7 +200,7 @@ modifying your shell environment. The file is loaded automatically at startup.
 
 ```dotenv
 # .env
-MCFONT_VERSION=1.21.4
+MCFONT_VERSION=latest
 MCFONT_OUTPUT=output
 MCFONT_STYLES=regular,bold,italic,bolditalic,galactic,illageralt
 MCFONT_TYPE=opentype
@@ -635,7 +635,7 @@ services:
     user: "1000:1000"
     working_dir: /build
     environment:
-      MCFONT_VERSION: "1.21.4"
+      MCFONT_VERSION: "latest"
       MCFONT_STYLES: "regular,bold"
       MCFONT_SILENT: "true"
       MCFONT_OUTPUT: "/output"
@@ -668,7 +668,7 @@ services:
     user: "1000:1000"
     working_dir: /build
     environment:
-      MCFONT_VERSION: "1.21.4"
+      MCFONT_VERSION: "latest"
       MCFONT_STYLES: "regular,bold"
       MCFONT_SILENT: "true"
       MCFONT_OUTPUT: "/output"
