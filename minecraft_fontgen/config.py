@@ -131,6 +131,8 @@ COLUMNS_PER_ROW = 16
 DEFAULT_GLYPH_SIZE = 8
 INK_ALPHA_THRESHOLD = 0  # a pixel is glyph coverage when alpha exceeds this (the game uses any alpha above 0)
 BOLD_PACK_GLYPHS = True  # False keeps pack-layer glyphs un-smeared in the Bold styles
+PACK_FONT_IDS = ("minecraft:include/default", "minecraft:default")  # default-font layers consumed from packs, in merge order
+ALT_FONT_IDS = ("minecraft:alt", "minecraft:illageralt")  # font ids handled by the alternate-style overlays
 UNITS_PER_EM = 1024
 ASCENT = (DEFAULT_GLYPH_SIZE - 1) * (UNITS_PER_EM // DEFAULT_GLYPH_SIZE)  # 7 * 128 = 896
 DESCENT = -(UNITS_PER_EM // DEFAULT_GLYPH_SIZE)  # -128

@@ -8,7 +8,7 @@ from collections import defaultdict, deque, OrderedDict
 from tqdm import tqdm
 from PIL import Image
 from minecraft_fontgen.asset_source import AssetStack, VanillaSource, sanitize_fs_name, split_resource_ref
-from minecraft_fontgen.config import ASCENT, BOLD_PACK_GLYPHS, DEFAULT_GLYPH_SIZE, INK_ALPHA_THRESHOLD, OUTPUT_DIR, MINECRAFT_JAR_DIR, WORK_DIR, UNITS_PER_EM, TEXTURE_PATH, FONT_STYLES
+from minecraft_fontgen.config import ALT_FONT_IDS, ASCENT, BOLD_PACK_GLYPHS, DEFAULT_GLYPH_SIZE, INK_ALPHA_THRESHOLD, OUTPUT_DIR, MINECRAFT_JAR_DIR, PACK_FONT_IDS, WORK_DIR, UNITS_PER_EM, TEXTURE_PATH, FONT_STYLES
 from minecraft_fontgen.functions import get_unicode_codepoint, in_unifont_ranges, log, is_silent, parse_json
 
 
@@ -50,9 +50,6 @@ def parse_provider_file(file, format, stack=None):
 
     slice_provider_tiles(providers)
     return providers
-
-PACK_FONT_IDS = ("minecraft:include/default", "minecraft:default")
-ALT_FONT_IDS = ("minecraft:alt", "minecraft:illageralt")
 
 
 def collect_pack_providers(stack):
