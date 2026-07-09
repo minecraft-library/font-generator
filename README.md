@@ -219,24 +219,13 @@ be `build`.
 
 Resource packs that add or replace font glyphs (bitmap providers in
 `assets/<namespace>/font/*.json`, or straight texture replacements of the
-vanilla font PNGs) can be merged into the generated fonts:
-
-```bash
-# One pack
-python -m minecraft_fontgen --version 1.21.4 --resource-pack path/to/pack.zip
-
-# Multiple packs: later packs override earlier ones, all packs override vanilla
-python -m minecraft_fontgen --version 1.21.4 --resource-pack base.zip --resource-pack overrides/
-
-# Environment variable form (paths separated by ';' on Windows, ':' elsewhere)
-MCFONT_RESOURCE_PACKS="base.zip;overrides" python -m minecraft_fontgen --version 1.21.4
-```
+vanilla font PNGs) can be merged into the generated fonts.
 
 > [!NOTE]
 > Packs may be zips (a single nested root folder is tolerated) or unpacked
-directories. Merge priority matches the game: a pack's providers win over
-vanilla for overlapping codepoints, and vanilla remains the fallback for
-everything else.
+> directories. Merge priority matches the game: a pack's providers win over
+> vanilla for overlapping codepoints, and vanilla remains the fallback for
+> everything else.
 
 > [!IMPORTANT]
 > Known limitations:
