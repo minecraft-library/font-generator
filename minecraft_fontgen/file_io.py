@@ -7,6 +7,7 @@ import numpy as np
 from collections import defaultdict, deque, OrderedDict
 from tqdm import tqdm
 from PIL import Image
+from minecraft_fontgen.asset_source import AssetStack, VanillaSource, sanitize_fs_name, split_resource_ref
 from minecraft_fontgen.config import ASCENT, COLUMNS_PER_ROW, DEFAULT_GLYPH_SIZE, OUTPUT_DIR, MINECRAFT_JAR_DIR, WORK_DIR, UNITS_PER_EM, TEXTURE_PATH, FONT_STYLES
 from minecraft_fontgen.functions import get_unicode_codepoint, in_unifont_ranges, log, is_silent, parse_json
 
@@ -33,7 +34,7 @@ def clean_directories(output_dir=None):
 # === Stage 2: Parse providers + slice tiles
 # ==========================================
 
-def parse_provider_file(file, format):
+def parse_provider_file(file, format, stack=None):
     """Reads a font provider file, parses it by format, and slices into glyph tiles."""
     log(f"🧩 Parsing {file}...")
     with open(file, "rb") as f:
@@ -43,7 +44,7 @@ def parse_provider_file(file, format):
     if format == "bin":
         providers = parse_bin_providers(raw_bytes)
     elif format == "json":
-        providers = parse_json_providers(raw_bytes)
+        providers = parse_json_providers(raw_bytes, stack)
     else:
         raise ValueError(f"Unsupported file format: {format}")
 
@@ -96,6 +97,9 @@ def parse_bin_providers(byte_data):
             providers.append({
                 "ascent": 15,
                 "height": 16,
+                "rows": 16,
+                "columns": 16,
+                "layer": "vanilla",
                 "chars": chars,
                 "file_name": page_file,
                 "file_path": page_path,
@@ -124,6 +128,9 @@ def parse_bin_providers(byte_data):
         providers.append({
             "ascent": 7,
             "height": 8,
+            "rows": 16,
+            "columns": 16,
+            "layer": "vanilla",
             "chars": chars,
             "file_name": ascii_file,
             "file_path": ascii_path,
@@ -134,36 +141,73 @@ def parse_bin_providers(byte_data):
 
     return providers
 
-def parse_json_providers(byte_data):
-    """Parses the JSON font provider format (default.json) into a list of provider dicts."""
-    raw_text = byte_data.decode("utf-8", errors="surrogatepass")
+def parse_json_providers(byte_data, stack=None, layer_name="vanilla"):
+    """Parses the JSON font provider format into a list of provider dicts.
+
+    Texture references resolve through the asset stack, so resource packs can
+    override vanilla textures and reference their own namespaces."""
+    if stack is None:
+        stack = AssetStack([VanillaSource()])
+    raw_text = byte_data.decode("utf-8", errors="surrogatepass").lstrip("\ufeff")
     data = parse_json(raw_text)
 
-    log("→ 🛠️ Parsing bitmap providers...")
+    log(f"→ 🛠️ Parsing bitmap providers ({layer_name})...")
     providers = []
-    for provider in data.get("providers", []):
-        if provider.get("type") == "bitmap" and "chars" in provider:
-            file_name = provider.get("file", "minecraft:font/").split("minecraft:font/")[-1]
-            name = os.path.splitext(file_name)[0]
-            output = f"{WORK_DIR}/glyphs/{name}"
+    for index, provider in enumerate(data.get("providers", [])):
+        provider_type = provider.get("type")
+        if provider_type != "bitmap":
+            log(f" → ⚠️ Skipping unsupported '{provider_type}' provider in {layer_name} (only bitmap providers are converted)")
+            continue
 
-            # Create provider directory
-            os.makedirs(output, exist_ok=True)
+        rows = provider.get("chars", [])
+        if not rows or not rows[0]:
+            log(f" → ⚠️ Skipping bitmap provider {index} in {layer_name} (no chars grid)")
+            continue
+        if any(len(row) != len(rows[0]) for row in rows):
+            log(f" → ⚠️ Skipping bitmap provider {index} in {layer_name} (chars rows have unequal lengths)")
+            continue
 
-            # Read unicode characters
-            chars = [char for row in provider.get("chars", []) for char in row]
-            log(f" → 🔢 Detected {len(chars)} unicode characters in '{name}'...")
+        height = provider.get("height", DEFAULT_GLYPH_SIZE)
+        if height <= 0:
+            log(f" → ⚠️ Skipping bitmap provider {index} in {layer_name} (height {height} is not positive)")
+            continue
+        if "ascent" not in provider:
+            log(f" → ⚠️ Bitmap provider {index} in {layer_name} has no ascent, defaulting to 0")
+        ascent = provider.get("ascent", 0)
+        if ascent > height:
+            log(f" → ⚠️ Skipping bitmap provider {index} in {layer_name} (ascent {ascent} exceeds height {height})")
+            continue
 
-            providers.append({
-                "ascent": provider.get("ascent", 0),
-                "height": provider.get("height", DEFAULT_GLYPH_SIZE),
-                "chars": chars,
-                "file_name": file_name,
-                "file_path": f"{MINECRAFT_JAR_DIR}/textures/font/{file_name}",
-                "name": name,
-                "output": output,
-                "tiles": []
-            })
+        ref = provider.get("file")
+        if not ref:
+            log(f" → ⚠️ Skipping bitmap provider {index} in {layer_name} (no file reference)")
+            continue
+        file_path = stack.materialize_texture(ref)
+        if file_path is None:
+            log(f" → ⚠️ Skipping bitmap provider {index} in {layer_name} (texture '{ref}' not found in any layer)")
+            continue
+
+        namespace, rel_path = split_resource_ref(ref)
+        name = sanitize_fs_name(f"{layer_name}_{namespace}_{os.path.splitext(rel_path)[0]}_{index}")
+        output = f"{WORK_DIR}/glyphs/{name}"
+        os.makedirs(output, exist_ok=True)
+
+        chars = [char for row in rows for char in row]
+        log(f" → 🔢 Detected {len(chars)} unicode characters in '{name}'...")
+
+        providers.append({
+            "ascent": ascent,
+            "height": height,
+            "rows": len(rows),
+            "columns": len(rows[0]),
+            "chars": chars,
+            "file_name": ref,
+            "file_path": file_path,
+            "name": name,
+            "output": output,
+            "layer": layer_name,
+            "tiles": []
+        })
 
     return providers
 
