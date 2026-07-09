@@ -39,6 +39,7 @@ MINECRAFT_BIN_FILE = f"{MINECRAFT_JAR_DIR}/font/glyph_sizes.bin"
 MINECRAFT_JSON_FILE = f"{MINECRAFT_JAR_DIR}/font/include/default.json"
 UNIFONT_PATH = "minecraft/font/include/unifont.json"
 TEXTURE_PATH = f"{MINECRAFT_JAR_DIR}/textures/font"
+RESOLVED_TEXTURE_DIR = WORK_DIR + "/textures"
 VALIDATE_SCRIPT = "validate_font.py"
 
 # Font Styles (toggle "enabled" to include/exclude a style)
