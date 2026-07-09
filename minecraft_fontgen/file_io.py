@@ -8,7 +8,7 @@ from collections import defaultdict, deque, OrderedDict
 from tqdm import tqdm
 from PIL import Image
 from minecraft_fontgen.asset_source import AssetStack, VanillaSource, sanitize_fs_name, split_resource_ref
-from minecraft_fontgen.config import ASCENT, BOLD_PACK_GLYPHS, COLUMNS_PER_ROW, DEFAULT_GLYPH_SIZE, INK_ALPHA_THRESHOLD, OUTPUT_DIR, MINECRAFT_JAR_DIR, WORK_DIR, UNITS_PER_EM, TEXTURE_PATH, FONT_STYLES
+from minecraft_fontgen.config import ASCENT, BOLD_PACK_GLYPHS, DEFAULT_GLYPH_SIZE, INK_ALPHA_THRESHOLD, OUTPUT_DIR, MINECRAFT_JAR_DIR, WORK_DIR, UNITS_PER_EM, TEXTURE_PATH, FONT_STYLES
 from minecraft_fontgen.functions import get_unicode_codepoint, in_unifont_ranges, log, is_silent, parse_json
 
 
@@ -196,6 +196,9 @@ def parse_json_providers(byte_data, stack=None, layer_name="vanilla"):
             continue
 
         rows = provider.get("chars", [])
+        if not isinstance(rows, list) or any(not isinstance(row, str) for row in rows):
+            log(f" → ⚠️ Skipping bitmap provider {index} in {layer_name} (chars grid is not a list of strings)")
+            continue
         if not rows or not rows[0]:
             log(f" → ⚠️ Skipping bitmap provider {index} in {layer_name} (no chars grid)")
             continue
@@ -203,9 +206,15 @@ def parse_json_providers(byte_data, stack=None, layer_name="vanilla"):
             log(f" → ⚠️ Skipping bitmap provider {index} in {layer_name} (chars rows have unequal lengths)")
             continue
 
+        if "height" in provider and type(provider["height"]) not in (int, float):
+            log(f" → ⚠️ Skipping bitmap provider {index} in {layer_name} (height {provider['height']} is not a number)")
+            continue
         height = provider.get("height", DEFAULT_GLYPH_SIZE)
         if height <= 0:
             log(f" → ⚠️ Skipping bitmap provider {index} in {layer_name} (height {height} is not positive)")
+            continue
+        if "ascent" in provider and type(provider["ascent"]) not in (int, float):
+            log(f" → ⚠️ Skipping bitmap provider {index} in {layer_name} (ascent {provider['ascent']} is not a number)")
             continue
         if "ascent" not in provider:
             log(f" → ⚠️ Bitmap provider {index} in {layer_name} has no ascent, defaulting to 0")
@@ -1044,7 +1053,11 @@ def _process_alternate_font(alt_config, regular_map, stack):
 
     providers = []
     for source_name, raw in stack.font_json_layers(font_id):
-        layer = parse_json_providers(raw, stack, layer_name=sanitize_fs_name(f"{source_name}_{name}"))
+        try:
+            layer = parse_json_providers(raw, stack, layer_name=sanitize_fs_name(f"{source_name}_{name}"))
+        except (ValueError, AttributeError) as error:
+            log(f" → ⚠️ Skipping malformed font JSON '{font_id}' in layer '{source_name}': {error}")
+            continue
         layer.reverse()  # the game walks a font's providers first-wins; the merge below is last-wins
         providers += layer
     if not providers:

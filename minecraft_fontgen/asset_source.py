@@ -225,9 +225,13 @@ class AssetStack:
             if not os.path.realpath(dest).startswith(root + os.sep):
                 log(f" → ⚠️ Skipping texture '{ref}' (path escapes the work directory)")
                 return None
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            with open(dest, "wb") as f:
-                f.write(data)
+            try:
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with open(dest, "wb") as f:
+                    f.write(data)
+            except OSError as error:
+                log(f" → ⚠️ Skipping texture '{ref}': {error}")
+                return None
             return dest
         return None
 

@@ -63,6 +63,18 @@ def test_returns_none_when_no_layer_defines_the_font():
     assert _process_alternate_font(ALT_CONFIG, _regular_map(), stack) is None
 
 
+def test_malformed_pack_alt_font_json_is_skipped(capsys):
+    bad_pack = FakeSource("badpack", fonts={
+        "minecraft:alt": b"{not json",
+    })
+    stack = AssetStack([_vanilla_alt_source(), bad_pack])
+    overlay = _process_alternate_font(ALT_CONFIG, _regular_map(), stack)
+
+    assert overlay[ord("A")]["source"] == "alternate"  # vanilla alt layer still used
+    assert overlay[ord("A")]["pixels"]["width"] == 2
+    assert "badpack" in capsys.readouterr().out
+
+
 def test_font_styles_carry_font_ids():
     by_name = {s["name"]: s for s in FONT_STYLES}
     assert by_name["Galactic"]["font_id"] == "minecraft:alt"

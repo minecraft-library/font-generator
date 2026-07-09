@@ -1,5 +1,7 @@
 import os
 
+import pytest
+
 from minecraft_fontgen.asset_source import AssetStack
 from minecraft_fontgen.file_io import parse_bin_providers, parse_json_providers
 
@@ -64,6 +66,23 @@ def test_skips_invalid_providers_with_warnings(capsys):
     assert "not found" in out
     assert "unequal" in out
     assert "exceeds height" in out
+
+
+@pytest.mark.parametrize("override", [
+    {"height": "8"},
+    {"chars": 42},
+    {"chars": [[1, 2]]},
+])
+def test_wrong_typed_provider_fields_are_skipped(capsys, override):
+    textures = {"sky:ok.png": make_png_bytes(8, 8, block(0, 0, 2, 2))}
+    provider = {"type": "bitmap", "file": "sky:ok.png", "ascent": 7, "height": 8, "chars": ["a"]}
+    provider.update(override)
+    raw = font_json_bytes([provider])
+
+    providers = parse_json_providers(raw, _stack(textures), layer_name="skypack")
+
+    assert len(providers) == 0
+    assert "⚠️" in capsys.readouterr().out
 
 
 def test_negative_ascent_is_accepted():

@@ -1,5 +1,6 @@
 import os
 
+from minecraft_fontgen import asset_source
 from minecraft_fontgen.asset_source import AssetStack, VanillaSource
 
 from helpers import FakeSource, make_png_bytes
@@ -49,6 +50,20 @@ def test_materialize_texture_rejects_unsafe_ref():
     stack = AssetStack([evil])
     assert stack.materialize_texture("minecraft:../../escape.png") is None
     assert not os.path.exists("escape.png")
+
+
+def test_materialize_texture_oserror_is_skipped(monkeypatch, capsys):
+    png = make_png_bytes(2, 2, [(0, 0)])
+    source = FakeSource("pack", textures={"sky:icons.png": png})
+    stack = AssetStack([source])
+
+    def raise_oserror(*args, **kwargs):
+        raise OSError("device not ready")
+
+    monkeypatch.setattr(asset_source.os, "makedirs", raise_oserror)
+
+    assert stack.materialize_texture("sky:icons.png") is None
+    assert "sky:icons.png" in capsys.readouterr().out
 
 
 def test_vanilla_source_reads_work_dir():
