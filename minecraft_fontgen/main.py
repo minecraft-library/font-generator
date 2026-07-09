@@ -14,22 +14,26 @@ from minecraft_fontgen.preview_font import write_preview_image, write_render_ima
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
-def main():
-    """Runs the font generation pipeline: download, parse, build glyph map, create fonts."""
-    opts = parse_args()
-    set_silent(opts.silent)
-
-    # Open packs one at a time before any network or destructive work so bad
-    # paths fail fast; close any already-opened source if a later one fails
+def open_resource_packs(paths):
+    """Opens every resource pack before any network or destructive work so bad
+    paths fail fast; closes any already-opened source if a later one fails."""
     pack_sources = []
     try:
-        for p in opts.resource_packs:
-            pack_sources.append(open_resource_pack(p))
+        for path in paths:
+            pack_sources.append(open_resource_pack(path))
     except ValueError as error:
         for source in pack_sources:
             source.close()
         log(f"❌ {error}")
         raise SystemExit(1)
+    return pack_sources
+
+def main():
+    """Runs the font generation pipeline: download, parse, build glyph map, create fonts."""
+    opts = parse_args()
+    set_silent(opts.silent)
+
+    pack_sources = open_resource_packs(opts.resource_packs)
 
     # Layer user resource packs above the vanilla extraction (later packs win)
     stack = AssetStack([VanillaSource()] + pack_sources)
