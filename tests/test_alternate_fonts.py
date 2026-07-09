@@ -77,7 +77,7 @@ def test_font_styles_carry_font_ids():
 def _bold_pack_providers():
     """A vanilla-layer 'V' provider and a pack-layer 'P' provider, each holding a
     single 3px-wide bar glyph (columns 0-2, rows 2-5 of an 8x8 tile). Bold tracing
-    expands the bar 1px rightward, so regular width == 3 and bold width == 4 —
+    expands the bar 1px rightward, so regular width == 3 and bold width == 4,
     a cheap, reliable way to tell which trace a Bold entry actually carries."""
     os.makedirs("work/glyphs/vanilla_bp", exist_ok=True)
     os.makedirs("work/glyphs/pack_bp", exist_ok=True)
