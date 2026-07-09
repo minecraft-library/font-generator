@@ -179,6 +179,12 @@ python -m minecraft_fontgen --silent --version 1.21.4
 
 # Using environment variables
 MCFONT_VERSION=1.21.4 MCFONT_STYLES=regular,bold python -m minecraft_fontgen
+
+# One resource pack
+python -m minecraft_fontgen --version 1.21.4 --resource-pack path/to/pack.zip
+
+# Multiple resource packs (later packs override earlier ones)
+python -m minecraft_fontgen --version 1.21.4 --resource-pack base.zip --resource-pack overrides/
 ```
 
 > [!NOTE]
