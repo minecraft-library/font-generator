@@ -24,6 +24,8 @@ def test_font_id_form():
     "minecraft:font/As cii.png",
     "bad ns:font/ascii.png",
     "minecraft:",
+    "..:font/ascii.png",
+    ".:font/ascii.png",
 ])
 def test_invalid_refs_raise(bad):
     with pytest.raises(ValueError):

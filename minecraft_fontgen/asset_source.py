@@ -19,6 +19,8 @@ def split_resource_ref(ref, default_namespace="minecraft"):
         namespace, path = default_namespace, ref
     if not _NAMESPACE_RE.match(namespace):
         raise ValueError(f"invalid namespace '{namespace}'")
+    if namespace in (".", ".."):
+        raise ValueError(f"unsafe namespace '{namespace}'")
     if not path or not _PATH_RE.match(path):
         raise ValueError(f"invalid path '{path}'")
     if any(segment in ("", ".", "..") for segment in path.split("/")):
