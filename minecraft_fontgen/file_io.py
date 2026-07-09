@@ -1104,24 +1104,37 @@ def precompute_glyph_scaling(glyph_map):
             for cp, tile in glyph_map[style_key].items():
                 progress.update(1)
 
-                # Compute scale factor.
-                # Provider glyphs use a uniform pixel scale (UNITS_PER_EM /
-                # DEFAULT_GLYPH_SIZE = 128) so that 1 Minecraft pixel = 1 font
-                # unit regardless of provider height.  This keeps the base
-                # character of accented glyphs (height=12) the same size as the
-                # equivalent standard glyph (height=8), with accents extending
-                # above the normal ascent line.
+                # Scale factor.
+                # Tiles carrying display_height use the game's bitmap-provider
+                # semantics: the tile renders display_height virtual pixels
+                # tall (display_scale = display_height / tile pixel height)
+                # with its top edge ascent virtual pixels above the baseline.
+                # Negative ascent is legal and hangs the glyph below the
+                # baseline. Every vanilla provider has display_height equal to
+                # its tile pixel height, so this reduces to the legacy uniform
+                # 128 units per pixel.
                 # Unifont fallback glyphs use ASCENT / ascent to compress 16px
                 # rows into the same visual space as 8px provider rows.
                 width, height = tile["size"]
                 ascent = tile.get("ascent", 0)
+                display_height = tile.get("display_height")
+                display_scale = None
                 if tile.get("source") == "unifont" and ascent > 0:
                     scale = ASCENT / ascent
+                elif display_height is not None:
+                    display_scale = display_height / height if height else 1.0
+                    scale = (UNITS_PER_EM / DEFAULT_GLYPH_SIZE) * display_scale
                 else:
                     scale = UNITS_PER_EM / DEFAULT_GLYPH_SIZE
                 tile["units_per_pixel"] = scale
 
                 pixels = tile.get("pixels")
+                if display_scale is not None and pixels:
+                    ink_width = 0 if pixels.get("empty") else pixels.get("width", 0)
+                    tile["advance_units"] = int(
+                        (math.floor(0.5 + ink_width * display_scale) + 1)
+                        * (UNITS_PER_EM / DEFAULT_GLYPH_SIZE))
+
                 if not pixels:
                     tile["scaled"] = {"outer": [], "holes": []}
                     continue
@@ -1138,7 +1151,12 @@ def precompute_glyph_scaling(glyph_map):
                     continue
 
                 min_x = min(x for x, y in all_points)
-                descender_offset = ascent if ascent > 0 else ASCENT / scale
+                if display_scale is not None:
+                    descender_offset = ascent * height / display_height
+                elif ascent > 0:
+                    descender_offset = ascent
+                else:
+                    descender_offset = ASCENT / scale
 
                 def transform(pt, _min_x=min_x, _s=scale, _do=descender_offset):
                     x, y = pt

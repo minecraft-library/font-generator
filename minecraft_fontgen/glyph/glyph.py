@@ -32,6 +32,7 @@ class Glyph:
         # Pre-computed scaled coordinates (set during glyph map building)
         self.scaled = tile.get("scaled", None)
         self.units_per_pixel = tile.get("units_per_pixel", UNITS_PER_EM / self.size[1])
+        self.advance_units = tile.get("advance_units")
         self.outer_scaled = []
         self.holes_scaled = []
 
@@ -79,6 +80,8 @@ class Glyph:
         if self.use_cff:
             if self.codepoint == 0x0020:
                 advance_width = UNITS_PER_EM // 2
+            elif self.advance_units is not None:
+                advance_width = self.advance_units
             else:
                 advance_width = round((self.width + 1) * self.units_per_pixel)
             return T2CharStringPen(advance_width, None)
