@@ -74,6 +74,7 @@ class DirAssetSource(AssetSource):
         return self._read("assets", namespace, "font", *f"{path}.json".split("/"))
 
     def get_texture(self, namespace, path):
+        namespace, path = split_resource_ref(f"{namespace}:{path}")
         return self._read("assets", namespace, "textures", *path.split("/"))
 
     def list_font_ids(self):
@@ -131,6 +132,7 @@ class ZipAssetSource(AssetSource):
         return self._read(f"assets/{namespace}/font/{path}.json")
 
     def get_texture(self, namespace, path):
+        namespace, path = split_resource_ref(f"{namespace}:{path}")
         return self._read(f"assets/{namespace}/textures/{path}")
 
     def list_font_ids(self):
@@ -169,11 +171,11 @@ def open_resource_pack(path):
 
     raw = source.read_mcmeta()
     if raw is None:
-        log(f"-> WARN Pack '{label}' has no pack.mcmeta, continuing anyway")
+        log(f"→ ⚠️ Pack '{label}' has no pack.mcmeta, continuing anyway")
     else:
         try:
-            meta = parse_json(raw.decode("utf-8", errors="replace").lstrip("﻿")).get("pack", {})
-            log(f"-> PACK Pack '{label}' (pack_format {meta.get('pack_format', '?')})")
+            meta = parse_json(raw.decode("utf-8", errors="replace").lstrip("\ufeff")).get("pack", {})
+            log(f"→ 📦 Pack '{label}' (pack_format {meta.get('pack_format', '?')})")
         except (ValueError, AttributeError):
-            log(f"-> WARN Pack '{label}' has a malformed pack.mcmeta, continuing anyway")
+            log(f"→ ⚠️ Pack '{label}' has a malformed pack.mcmeta, continuing anyway")
     return source

@@ -89,3 +89,18 @@ def test_open_resource_pack_tolerates_malformed_mcmeta(tmp_path, capsys):
     source = open_resource_pack(root)
     assert source.get_font_json("sky:extra") is not None
     assert "malformed" in capsys.readouterr().out
+
+
+def test_dir_source_get_texture_rejects_traversal(tmp_path):
+    root = write_pack_dir(tmp_path / "pack", PACK_FILES)
+    source = DirAssetSource(root, "pack")
+    with pytest.raises(ValueError):
+        source.get_texture("minecraft", "../../../../etc/passwd")
+
+
+def test_zip_source_get_texture_rejects_traversal(tmp_path):
+    path = write_pack_zip(tmp_path / "flat.zip", PACK_FILES)
+    source = ZipAssetSource(path, "pack")
+    with pytest.raises(ValueError):
+        source.get_texture("..", "gui/icons.png")
+    source.close()
