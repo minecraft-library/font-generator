@@ -66,3 +66,16 @@ def test_close_closes_all_sources():
     a, b = FakeSource("a"), FakeSource("b")
     AssetStack([a, b]).close()
     assert a.closed and b.closed
+
+
+def test_close_survives_raising_source():
+    class RaisingSource(FakeSource):
+        def close(self):
+            raise OSError("boom")
+
+    raising = RaisingSource("raising")
+    normal = FakeSource("normal")
+    stack = AssetStack([raising, normal])
+
+    stack.close()
+    assert normal.closed

@@ -233,4 +233,7 @@ class AssetStack:
 
     def close(self):
         for source in self.sources:
-            source.close()
+            try:
+                source.close()
+            except Exception as error:
+                log(f" → ⚠️ Failed to close asset source '{source.name}': {error}")
