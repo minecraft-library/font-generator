@@ -222,11 +222,25 @@ def slice_provider_tiles(providers):
 
     for provider in providers:
         bitmap = binarize_provider_bitmap(provider)
+        if bitmap is None:
+            log(f" → ⚠️ Skipping '{provider['name']}' (texture missing: {provider['file_path']})")
+            provider["tiles"] = []
+            continue
         tiles = []
 
-        # Calculate tile dimensions
+        # Calculate tile dimensions from the chars grid (the game divides the
+        # texture evenly by the grid; the JSON height field is display scaling)
         width, height = bitmap.size
-        glyph_width = width / COLUMNS_PER_ROW
+        columns = provider["columns"]
+        rows = provider["rows"]
+        glyph_width = width // columns
+        tile_px_height = height // rows
+        if glyph_width == 0 or tile_px_height == 0:
+            log(f" → ⚠️ Skipping '{provider['name']}' (texture {width}x{height} is smaller than its {columns}x{rows} chars grid)")
+            provider["tiles"] = []
+            continue
+        if width % columns or height % rows:
+            log(f" → ⚠️ '{provider['name']}': texture {width}x{height} does not divide evenly into a {columns}x{rows} grid")
 
         with tqdm(enumerate(provider["chars"]), total=len(provider["chars"]),
                   desc=f" → 🔣 {provider['file_name']}", unit="tile",
@@ -241,13 +255,15 @@ def slice_provider_tiles(providers):
                 tiles_progress.set_description(f" → 🔣 0x{codepoint:02X}")
 
                 # Collate tile data
-                tile_row = i // COLUMNS_PER_ROW
-                tile_column = i % COLUMNS_PER_ROW
+                tile_row = i // columns
+                tile_column = i % columns
                 tile = {
                     "unicode": unicode,
                     "codepoint": codepoint,
-                    "size": (glyph_width, provider.get("height")),
+                    "size": (glyph_width, tile_px_height),
+                    "display_height": provider["height"],
                     "ascent": provider.get("ascent", 0),
+                    "layer": provider.get("layer", "vanilla"),
                     "location": (tile_column, tile_row),
                     "output": f"{provider['output']}/tiles/{tile_row:02}_{tile_column:02}_{codepoint:04X}"
                 }
@@ -841,6 +857,7 @@ def _trace_bitmap_contours2(bitmap_grid, bold: bool = False):
         "grid": pixel_grid,
         "width": (max_x - min_x + 1),
         "lsb": min_x,
+        "empty": len(col_ones) == 0,
         "advance": (min_x + glyph_width + 1),
         "paths": paths,
         "holes": holes
