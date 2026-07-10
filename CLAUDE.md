@@ -46,6 +46,7 @@ Tests live in `tests/` (pytest, installed via `pip install -e .[dev]`; run `.ven
 | `--silent` | `MCFONT_SILENT` | Suppress output (`1`/`true`/`yes`) | `False` |
 | `--validate` | `MCFONT_VALIDATE` | Run FontForge validation after build (`1`/`true`/`yes`) | `False` |
 | `--resource-pack` | `MCFONT_RESOURCE_PACKS` | Resource pack zip/dir merged into the fonts (repeatable, later wins; env var is os.pathsep-separated) | None |
+| `--no-vertex-inset` | `MCFONT_NO_VERTEX_INSET` | Disable the 1-unit shared-vertex inset (`1`/`true`/`yes`); some renderers show hairline gaps at inset corners | Inset enabled (`INSET_SHARED_VERTICES` in `config.py`) |
 
 ## Architecture
 
@@ -82,7 +83,7 @@ Non-bitmap providers (`space`, `ttf`, `unihex`, `reference`) are warn-skipped.
 ### Glyph Processing
 
 - `minecraft_fontgen.file_io:_trace_bitmap_contours` - Core contour tracing: flood-fill labels pixel groups, traces boundary edges using right-hand rule, extracts corner points for vector outlines. Bold glyphs get a 1px rightward expansion before tracing
-- `minecraft_fontgen.file_io:precompute_glyph_scaling` - Scales glyph coordinates from pixel space to font units using `UNITS_PER_EM / tile_height` (e.g. 128 for 8px provider glyphs, 64 for 16px unifont glyphs). Splits self-touching contours at duplicate vertices and insets shared vertices between contours. This is style-independent; only italic shear differs and is applied as a lightweight post-transform per font
+- `minecraft_fontgen.file_io:precompute_glyph_scaling` - Scales glyph coordinates from pixel space to font units using `UNITS_PER_EM / tile_height` (e.g. 128 for 8px provider glyphs, 64 for 16px unifont glyphs). Splits self-touching contours at duplicate vertices and insets shared vertices between contours (the inset is skipped when `--no-vertex-inset`/`MCFONT_NO_VERTEX_INSET` is set). This is style-independent; only italic shear differs and is applied as a lightweight post-transform per font
 - `minecraft_fontgen.glyph.glyph:Glyph` - Assigns pre-computed scaled coordinates, applies italic shear transform if needed, draws contours with winding direction based on geometric nesting depth via fontTools pen (T2CharStringPen for CFF, TTGlyphPen for TrueType). Advance width in the CFF pen uses `self.size[1]` (tile height) for the scale factor
 - `minecraft_fontgen.glyph.glyph_storage:GlyphStorage` - Accumulates glyphs, manages cmap table entries (Format 4 for BMP, Format 12 for SMP), writes final glyph order and metrics. Advance width calculation uses `glyph.size[1]` (tile height) for the scale factor
 
