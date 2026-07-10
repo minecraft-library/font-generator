@@ -3,7 +3,7 @@ import os
 
 from dataclasses import dataclass
 
-from minecraft_fontgen.config import OUTPUT_DIR, OPENTYPE, FONT_STYLES, RESOURCE_PACKS
+from minecraft_fontgen.config import OUTPUT_DIR, OPENTYPE, FONT_STYLES, RESOURCE_PACKS, INSET_SHARED_VERTICES
 
 VALID_STYLES = {"regular", "bold", "italic", "bolditalic", "galactic", "illageralt"}
 
@@ -18,6 +18,7 @@ class BuildOptions:
     output_ext: str
     validate: bool
     resource_packs: tuple[str, ...]
+    inset_vertices: bool
 
 
 def _load_env_file(path=".env"):
@@ -58,6 +59,10 @@ def parse_args():
                         help="Resource pack zip or directory whose font glyphs are merged into the "
                              "generated fonts (repeatable; later packs override earlier ones, and "
                              "all packs override vanilla)")
+    parser.add_argument("--no-vertex-inset", action="store_true", default=None,
+                        help="Disable the 1-unit inset of vertices shared between contours "
+                             "(the inset silences FontForge wrong-direction warnings, but some "
+                             "renderers show hairline gaps where contours touch)")
 
     args = parser.parse_args()
 
@@ -131,6 +136,14 @@ def parse_args():
     else:
         validate = False
 
+    # --- vertex inset ---
+    if args.no_vertex_inset is not None and args.no_vertex_inset:
+        inset_vertices = False
+    elif os.environ.get("MCFONT_NO_VERTEX_INSET", "").lower() in ("1", "true", "yes"):
+        inset_vertices = False
+    else:
+        inset_vertices = INSET_SHARED_VERTICES
+
     # --- resource packs ---
     if args.resource_pack:
         raw_packs = args.resource_pack
@@ -155,4 +168,5 @@ def parse_args():
         output_ext=output_ext,
         validate=validate,
         resource_packs=tuple(resource_packs),
+        inset_vertices=inset_vertices,
     )

@@ -51,7 +51,7 @@ def main():
         providers += collect_pack_providers(stack)
 
         # Build unified glyph map with pre-computed scaling
-        glyph_map = build_glyph_map(providers, unifont_glyphs, stack)
+        glyph_map = build_glyph_map(providers, unifont_glyphs, stack, inset_vertices=opts.inset_vertices)
     finally:
         stack.close()
 

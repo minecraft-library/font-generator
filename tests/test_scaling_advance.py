@@ -78,6 +78,45 @@ def test_unifont_tiles_keep_legacy_scale_and_no_advance_units():
     assert "advance_units" not in tile
 
 
+def _diagonal_tile():
+    """Two diagonally-touching pixels: their contours share a corner vertex."""
+    grid = np.zeros((8, 8), dtype=np.uint8)
+    grid[0, 0] = 1
+    grid[1, 1] = 1
+    return {
+        "unicode": "",
+        "codepoint": 0xE000,
+        "size": (8, 8),
+        "ascent": 7,
+        "display_height": 8,
+        "pixels": _trace_bitmap_contours2(grid),
+        "svg": None,
+        "source": "provider",
+    }
+
+
+def _contour_vertex_sets(tile):
+    contours = tile["scaled"]["outer"] + tile["scaled"]["holes"]
+    return [{(round(x), round(y)) for x, y in c} for c in contours]
+
+
+def test_inset_enabled_breaks_shared_vertices():
+    tile = _diagonal_tile()
+    precompute_glyph_scaling({"Regular": OrderedDict({tile["codepoint"]: tile})})
+    sets = _contour_vertex_sets(tile)
+    assert len(sets) == 2
+    assert not (sets[0] & sets[1])
+
+
+def test_inset_disabled_keeps_shared_vertices():
+    tile = _diagonal_tile()
+    precompute_glyph_scaling({"Regular": OrderedDict({tile["codepoint"]: tile})},
+                             inset_vertices=False)
+    sets = _contour_vertex_sets(tile)
+    assert len(sets) == 2
+    assert sets[0] & sets[1]
+
+
 def test_glyph_prefers_advance_units():
     tile = _scaled(_tile(7, 7, range(3), range(7), display_height=7, ascent=7))
     glyph = Glyph(tile, use_cff=True)

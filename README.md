@@ -163,6 +163,7 @@ CLI argument  >  Shell environment variable  >  .env file  >  config.py defaults
 | `--silent` | `MCFONT_SILENT` | Suppress all output except errors | Disabled | `true` |
 | `--validate` | `MCFONT_VALIDATE` | Run FontForge validation after build (requires `fontforge`) | Disabled | `true` |
 | `--resource-pack` | `MCFONT_RESOURCE_PACKS` | Resource pack zip/directory to merge (repeatable; env var is `os.pathsep`-separated) | None | `packs/sb.zip` |
+| `--no-vertex-inset` | `MCFONT_NO_VERTEX_INSET` | Disable the 1-unit inset of vertices shared between contours (see note below) | Inset enabled | `true` |
 
 Boolean flags accept `1`, `true`, or `yes`. Valid styles: `regular`, `bold`,
 `italic`, `bolditalic`, `galactic`, `illageralt`.
@@ -192,6 +193,14 @@ python -m minecraft_fontgen --version latest --resource-pack base.zip --resource
 > is only produced when both `bold` and `italic` are present *or* `bolditalic`
 > is explicitly listed.
 
+> [!NOTE]
+> By default, vertices shared between two contours (a pixel-font artifact
+> where glyph parts touch corner-to-corner) are inset by 1 font unit to
+> silence FontForge's wrong-direction false positives during `--validate`.
+> Some renderers draw hairline gaps at these inset corners — if glyphs look
+> like they have shaved corners or missing pixel tips, rebuild with
+> `--no-vertex-inset` to keep the exact pixel outlines.
+
 <details>
 <summary>The <code>.env</code> file</summary>
 
@@ -206,6 +215,7 @@ MCFONT_STYLES=regular,bold,italic,bolditalic,galactic,illageralt
 MCFONT_TYPE=opentype
 MCFONT_SILENT=false
 MCFONT_VALIDATE=false
+MCFONT_NO_VERTEX_INSET=false
 ```
 
 Values from `.env` will **not** overwrite variables that already exist in your
