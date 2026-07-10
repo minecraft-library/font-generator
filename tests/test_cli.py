@@ -54,3 +54,28 @@ def test_missing_pack_path_errors(monkeypatch, tmp_path):
     _argv(monkeypatch, "--resource-pack", str(tmp_path / "nope.zip"))
     with pytest.raises(SystemExit):
         parse_args()
+
+
+def test_vertex_inset_enabled_by_default(monkeypatch):
+    _argv(monkeypatch)
+    monkeypatch.delenv("MCFONT_NO_VERTEX_INSET", raising=False)
+    assert parse_args().inset_vertices is True
+
+
+def test_no_vertex_inset_flag_disables(monkeypatch):
+    _argv(monkeypatch, "--no-vertex-inset")
+    assert parse_args().inset_vertices is False
+
+
+@pytest.mark.parametrize("value", ["1", "true", "yes", "TRUE"])
+def test_no_vertex_inset_env_disables(monkeypatch, value):
+    _argv(monkeypatch)
+    monkeypatch.setenv("MCFONT_NO_VERTEX_INSET", value)
+    assert parse_args().inset_vertices is False
+
+
+@pytest.mark.parametrize("value", ["0", "false", "no", ""])
+def test_no_vertex_inset_env_falsy_keeps_inset(monkeypatch, value):
+    _argv(monkeypatch)
+    monkeypatch.setenv("MCFONT_NO_VERTEX_INSET", value)
+    assert parse_args().inset_vertices is True

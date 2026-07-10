@@ -943,7 +943,7 @@ def _write_tile_svg(grid, size, output_file):
 # === Stage 3: Build unified glyph map
 # ==========================================
 
-def build_glyph_map(providers, unifont_glyphs, stack=None):
+def build_glyph_map(providers, unifont_glyphs, stack=None, inset_vertices=True):
     """Builds a unified glyph map merging provider glyphs (priority) with unifont fallbacks and alternate fonts."""
     log(f"🧩 Building unified glyph map...")
     glyph_map = {"Regular": OrderedDict(), "Bold": OrderedDict()}
@@ -1001,7 +1001,7 @@ def build_glyph_map(providers, unifont_glyphs, stack=None):
     log(f"→ 🔢 Prepared {total} glyphs ({provider_count} provider, {unifont_count} unifont)")
 
     # 6. Pre-compute scaling
-    precompute_glyph_scaling(glyph_map)
+    precompute_glyph_scaling(glyph_map, inset_vertices=inset_vertices)
 
     return glyph_map
 
@@ -1104,8 +1104,12 @@ def _process_alternate_font(alt_config, regular_map, stack):
 
     return overlay_map
 
-def precompute_glyph_scaling(glyph_map):
-    """Scales glyph coordinates from pixel space to font units, splits self-touching contours, and insets shared vertices."""
+def precompute_glyph_scaling(glyph_map, inset_vertices=True):
+    """Scales glyph coordinates from pixel space to font units, splits self-touching contours, and insets shared vertices.
+
+    inset_vertices=False skips the shared-vertex inset for renderers that
+    show hairline gaps where contours touch.
+    """
     styles = len(glyph_map)
     per_style = len(next(iter(glyph_map.values())))
     total = per_style * styles
@@ -1180,7 +1184,8 @@ def precompute_glyph_scaling(glyph_map):
 
                 scaled_outer = _split_self_touching(scaled_outer)
                 scaled_holes = _split_self_touching(scaled_holes)
-                scaled_outer, scaled_holes = _inset_shared_vertices(scaled_outer, scaled_holes)
+                if inset_vertices:
+                    scaled_outer, scaled_holes = _inset_shared_vertices(scaled_outer, scaled_holes)
 
                 tile["scaled"] = {
                     "outer": scaled_outer,

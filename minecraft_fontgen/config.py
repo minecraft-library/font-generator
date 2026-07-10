@@ -8,6 +8,7 @@ SILENT_LOG = False # True to disable logging
 OUTPUT_DIR = "output"
 OPENTYPE = True # False for TrueType
 RESOURCE_PACKS = []  # default resource pack paths when no --resource-pack / MCFONT_RESOURCE_PACKS is given
+INSET_SHARED_VERTICES = True  # False skips the 1-unit shared-vertex inset; some renderers show hairline gaps with it (overridable via --no-vertex-inset / MCFONT_NO_VERTEX_INSET)
 
 # ==================================
 # === FONT DETAILS / DO NOT EDIT ===

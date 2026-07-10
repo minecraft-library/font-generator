@@ -36,6 +36,7 @@ def _opts(resource_packs=(), validate=False):
         output_ext="otf",
         validate=validate,
         resource_packs=resource_packs,
+        inset_vertices=True,
     )
 
 
@@ -61,7 +62,7 @@ def _stub_pipeline(monkeypatch, calls):
         calls.append("collect")
         return []
 
-    def build_glyph_map(providers, unifont_glyphs, stack):
+    def build_glyph_map(providers, unifont_glyphs, stack, inset_vertices=True):
         calls.append("build")
         return {}
 
