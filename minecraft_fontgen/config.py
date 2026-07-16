@@ -31,6 +31,8 @@ SAMPLE_TEXT = "The quick brown fox jumps over the lazy dog. 0123456789"
 
 # File Output
 OUTPUT_FONT_NAME = "Minecraft"
+BITMAP_SHEETS_DIR_NAME = "bitmap-sheets"  # subdirectory of the output dir used by --emit-bitmap-sheets
+BITMAP_SHEETS_MANIFEST_NAME = "manifest.json"
 
 # File Input
 WORK_DIR = "work"

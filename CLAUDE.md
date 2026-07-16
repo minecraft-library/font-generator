@@ -47,19 +47,21 @@ Tests live in `tests/` (pytest, installed via `pip install -e .[dev]`; run `.ven
 | `--validate` | `MCFONT_VALIDATE` | Run FontForge validation after build (`1`/`true`/`yes`) | `False` |
 | `--resource-pack` | `MCFONT_RESOURCE_PACKS` | Resource pack zip/dir merged into the fonts (repeatable, later wins; env var is os.pathsep-separated) | None |
 | `--no-vertex-inset` | `MCFONT_NO_VERTEX_INSET` | Disable the 1-unit shared-vertex inset (`1`/`true`/`yes`); some renderers show hairline gaps at inset corners | Inset enabled (`INSET_SHARED_VERTICES` in `config.py`) |
+| `--emit-bitmap-sheets` | `MCFONT_EMIT_BITMAP_SHEETS` | Copy the vanilla bitmap font sheets byte-identical into `<output>/bitmap-sheets/<ns>/<path>` plus a `manifest.json` of provider metrics (`1`/`true`/`yes`) | `False` |
 
 ## Architecture
 
 ### Pipeline (minecraft_fontgen/main.py)
 
-The pipeline runs sequentially through six stages:
+The pipeline runs sequentially through seven stages:
 
 1. **Clean** (`minecraft_fontgen.file_io:clean_directories`) - Wipes and recreates `work/` and `output/` directories
-2. **Download** (`minecraft_fontgen.piston:download_minecraft_assets`) - Selects a Minecraft version (non-interactively via `--version`/`MCFONT_VERSION`, or interactively via prompt). Downloads version manifest, client JAR, and extracts font assets to `work/`. Then downloads unifont hex files if enabled. Returns the matched font file path, format, and unifont glyph data
-3. **Parse + Slice** (`minecraft_fontgen.file_io:parse_provider_file`) - Reads `include/default.json` from the extracted JAR to discover bitmap font providers (PNG files + Unicode character mappings). Internally calls `slice_provider_tiles` to crop individual glyphs from bitmap PNGs, trace contours with flood-fill labeling, and generate SVG debug output
-4. **Build glyph map** (`minecraft_fontgen.file_io:build_glyph_map`) - Merges provider glyphs (priority) with unifont fallback glyphs into an `OrderedDict` keyed by codepoint, per style (Regular/Bold). Processes alternate fonts (Galactic, Illageralt) by cloning the Regular glyph map and overlaying alternate glyphs from their JSON provider files. Pre-computes scaled coordinates (pixel space to font units) for all glyphs via `precompute_glyph_scaling`
-5. **Create font files** (`minecraft_fontgen.font_creator:create_font_files`) - Batch creates all enabled font styles (Regular, Bold, Italic, BoldItalic, Galactic, Illageralt). Initializes fontTools `TTFont` tables for each style, converts glyphs with a single progress bar across all styles, then finalizes and saves all fonts. Styles whose glyph map is missing (e.g. Galactic on older versions) are gracefully skipped. Returns the list of output file paths
-6. **Validate** (`minecraft_fontgen.functions:validate_fonts`) - Optional, runs only when `--validate` or `MCFONT_VALIDATE=1` is set. Invokes `validate_font.py` via FontForge subprocess on all generated font files. Reports per-glyph validation errors bucketed by type
+2. **Download** (`minecraft_fontgen.piston:download_minecraft_assets`) - Selects a Minecraft version (non-interactively via `--version`/`MCFONT_VERSION`, or interactively via prompt). Downloads version manifest, client JAR, and extracts font assets to `work/`. Then downloads unifont hex files if enabled. Returns the matched font file path, format, unifont glyph data, and resolved game version id
+3. **Emit bitmap sheets** (`minecraft_fontgen.bitmap_sheets:emit_bitmap_sheets`) - Optional, runs only with `--emit-bitmap-sheets`/`MCFONT_EMIT_BITMAP_SHEETS=1`. Copies the vanilla `include/default.json` bitmap sheets byte-identical into `<output>/bitmap-sheets/<ns>/<path>` and writes a `manifest.json` (game version + verbatim provider definitions with height made explicit + sha256 per emitted PNG). Fails loudly (exit 1) on a missing sheet or a provider the game would reject, unlike the skip-with-warn glyph pipeline
+4. **Parse + Slice** (`minecraft_fontgen.file_io:parse_provider_file`) - Reads `include/default.json` from the extracted JAR to discover bitmap font providers (PNG files + Unicode character mappings). Internally calls `slice_provider_tiles` to crop individual glyphs from bitmap PNGs, trace contours with flood-fill labeling, and generate SVG debug output
+5. **Build glyph map** (`minecraft_fontgen.file_io:build_glyph_map`) - Merges provider glyphs (priority) with unifont fallback glyphs into an `OrderedDict` keyed by codepoint, per style (Regular/Bold). Processes alternate fonts (Galactic, Illageralt) by cloning the Regular glyph map and overlaying alternate glyphs from their JSON provider files. Pre-computes scaled coordinates (pixel space to font units) for all glyphs via `precompute_glyph_scaling`
+6. **Create font files** (`minecraft_fontgen.font_creator:create_font_files`) - Batch creates all enabled font styles (Regular, Bold, Italic, BoldItalic, Galactic, Illageralt). Initializes fontTools `TTFont` tables for each style, converts glyphs with a single progress bar across all styles, then finalizes and saves all fonts. Styles whose glyph map is missing (e.g. Galactic on older versions) are gracefully skipped. Returns the list of output file paths
+7. **Validate** (`minecraft_fontgen.functions:validate_fonts`) - Optional, runs only when `--validate` or `MCFONT_VALIDATE=1` is set. Invokes `validate_font.py` via FontForge subprocess on all generated font files. Reports per-glyph validation errors bucketed by type
 
 ### Resource Packs (minecraft_fontgen/asset_source.py)
 

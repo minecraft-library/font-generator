@@ -26,7 +26,7 @@ from minecraft_fontgen.cli import BuildOptions
 from helpers import FakeSource
 
 
-def _opts(resource_packs=(), validate=False):
+def _opts(resource_packs=(), validate=False, emit_bitmap_sheets=False):
     return BuildOptions(
         silent=True,
         output_dir="output",
@@ -37,6 +37,7 @@ def _opts(resource_packs=(), validate=False):
         validate=validate,
         resource_packs=resource_packs,
         inset_vertices=True,
+        emit_bitmap_sheets=emit_bitmap_sheets,
     )
 
 
@@ -52,7 +53,11 @@ def _stub_pipeline(monkeypatch, calls):
 
     def download_minecraft_assets(mc_version):
         calls.append("download")
-        return "matched.jar", "otf", {}
+        return "matched.json", "json", {}, "1.21.8"
+
+    def emit_bitmap_sheets(provider_file, provider_format, output_dir, game_version, source=None):
+        calls.append("emit")
+        return "output/bitmap-sheets/manifest.json"
 
     def parse_provider_file(file, format, stack):
         calls.append("parse")
@@ -72,6 +77,7 @@ def _stub_pipeline(monkeypatch, calls):
 
     monkeypatch.setattr(main_mod, "clean_directories", clean_directories)
     monkeypatch.setattr(main_mod, "download_minecraft_assets", download_minecraft_assets)
+    monkeypatch.setattr(main_mod, "emit_bitmap_sheets", emit_bitmap_sheets)
     monkeypatch.setattr(main_mod, "parse_provider_file", parse_provider_file)
     monkeypatch.setattr(main_mod, "collect_pack_providers", collect_pack_providers)
     monkeypatch.setattr(main_mod, "build_glyph_map", build_glyph_map)
@@ -139,6 +145,49 @@ def test_stack_closes_when_download_fails(monkeypatch):
     assert "parse" not in calls
     assert fakes["p1"].closed
     assert fakes["p2"].closed
+
+
+def test_emit_bitmap_sheets_disabled_by_default(monkeypatch):
+    calls = []
+    monkeypatch.setattr(main_mod, "parse_args", lambda: _opts())
+    _stub_pipeline(monkeypatch, calls)
+
+    main_mod.main()
+
+    assert "emit" not in calls
+
+
+def test_emit_bitmap_sheets_runs_between_download_and_parse(monkeypatch):
+    calls = []
+    monkeypatch.setattr(main_mod, "parse_args", lambda: _opts(emit_bitmap_sheets=True))
+    _stub_pipeline(monkeypatch, calls)
+
+    main_mod.main()
+
+    assert calls.index("download") < calls.index("emit")
+    assert calls.index("emit") < calls.index("parse")
+    assert "create" in calls  # font generation still runs in the same invocation
+
+
+def test_emit_bitmap_sheets_failure_exits_nonzero_and_closes_stack(monkeypatch, capsys):
+    calls = []
+    fakes = {"p1": FakeSource("pack1")}
+    monkeypatch.setattr(main_mod, "parse_args", lambda: _opts(resource_packs=("p1",), emit_bitmap_sheets=True))
+    monkeypatch.setattr(main_mod, "open_resource_pack", lambda path: fakes[path])
+    _stub_pipeline(monkeypatch, calls)
+
+    def emit_bitmap_sheets(provider_file, provider_format, output_dir, game_version, source=None):
+        raise RuntimeError("sheet 'minecraft:font/ascii.png' is missing")
+
+    monkeypatch.setattr(main_mod, "emit_bitmap_sheets", emit_bitmap_sheets)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main_mod.main()
+
+    assert exc_info.value.code == 1
+    assert "minecraft:font/ascii.png" in capsys.readouterr().err
+    assert "create" not in calls
+    assert fakes["p1"].closed
 
 
 def test_second_pack_open_failure_closes_first(monkeypatch):

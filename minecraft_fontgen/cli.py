@@ -19,6 +19,7 @@ class BuildOptions:
     validate: bool
     resource_packs: tuple[str, ...]
     inset_vertices: bool
+    emit_bitmap_sheets: bool
 
 
 def _load_env_file(path=".env"):
@@ -63,6 +64,10 @@ def parse_args():
                         help="Disable the 1-unit inset of vertices shared between contours "
                              "(the inset silences FontForge wrong-direction warnings, but some "
                              "renderers show hairline gaps where contours touch)")
+    parser.add_argument("--emit-bitmap-sheets", action="store_true", default=None,
+                        help="Copy the vanilla bitmap font sheets byte-identical into "
+                             "<output>/bitmap-sheets/ and write a manifest.json with their "
+                             "provider metrics (composable with font generation)")
 
     args = parser.parse_args()
 
@@ -136,6 +141,14 @@ def parse_args():
     else:
         validate = False
 
+    # --- emit bitmap sheets ---
+    if args.emit_bitmap_sheets is not None and args.emit_bitmap_sheets:
+        emit_bitmap_sheets = True
+    elif os.environ.get("MCFONT_EMIT_BITMAP_SHEETS", "").lower() in ("1", "true", "yes"):
+        emit_bitmap_sheets = True
+    else:
+        emit_bitmap_sheets = False
+
     # --- vertex inset ---
     if args.no_vertex_inset is not None and args.no_vertex_inset:
         inset_vertices = False
@@ -169,4 +182,5 @@ def parse_args():
         validate=validate,
         resource_packs=tuple(resource_packs),
         inset_vertices=inset_vertices,
+        emit_bitmap_sheets=emit_bitmap_sheets,
     )

@@ -2,6 +2,7 @@ import sys
 import io
 
 from minecraft_fontgen.asset_source import AssetStack, VanillaSource, open_resource_pack
+from minecraft_fontgen.bitmap_sheets import emit_bitmap_sheets
 from minecraft_fontgen.cli import parse_args
 from minecraft_fontgen.piston import download_minecraft_assets
 from minecraft_fontgen.file_io import clean_directories, collect_pack_providers, parse_provider_file, build_glyph_map
@@ -42,7 +43,15 @@ def main():
         clean_directories(opts.output_dir)
 
         # Download MC version, extract unifont + JAR assets
-        matched_file, matched_format, unifont_glyphs = download_minecraft_assets(opts.mc_version)
+        matched_file, matched_format, unifont_glyphs, game_version = download_minecraft_assets(opts.mc_version)
+
+        # Copy the vanilla bitmap sheets + provider manifest (--emit-bitmap-sheets)
+        if opts.emit_bitmap_sheets:
+            try:
+                emit_bitmap_sheets(matched_file, matched_format, opts.output_dir, game_version)
+            except (OSError, ValueError, RuntimeError) as error:
+                print(f"❌ {error}", file=sys.stderr)
+                raise SystemExit(1)
 
         # Parse provider glyphs from JAR bitmap PNGs (includes slicing)
         providers = parse_provider_file(matched_file, matched_format, stack)

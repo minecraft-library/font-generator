@@ -14,10 +14,14 @@ from minecraft_fontgen.functions import fetch_bytes, fetch_json, fetch_minecraft
 # ==========================================
 
 def download_minecraft_assets(mc_version=None):
-    """Downloads and extracts Minecraft font assets and unifont fallbacks via the Piston API."""
+    """Downloads and extracts Minecraft font assets and unifont fallbacks via the Piston API.
+
+    Returns the matched font provider file path, its format, the unifont glyph
+    data, and the resolved game version id (e.g. '1.21.8' after resolving 'latest')."""
     log(f"🧩 Processing minecraft piston data...")
     version_json = select_minecraft_version(mc_version)
     version_data = fetch_json(version_json["url"], label="version metadata")
+    game_version = version_data.get("id")
 
     if "assetIndex" not in version_data:
         raise RuntimeError("→ ❌ Missing asset index in version data.")
@@ -53,7 +57,7 @@ def download_minecraft_assets(mc_version=None):
     except RuntimeError:
         log("→ ⚠️ Unifont not available for this version, skipping...")
 
-    return matched_file, matched_format, unifont_glyphs
+    return matched_file, matched_format, unifont_glyphs, game_version
 
 
 # ==========================================

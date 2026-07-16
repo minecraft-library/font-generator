@@ -15,6 +15,7 @@ Convert Minecraft's bitmap font glyphs into fully functional OpenType (`.otf`) o
   - [IntelliJ IDEA](#intellij-idea)
   - [Configuration](#configuration)
 - [Output](#output)
+  - [Bitmap Sheet Export](#bitmap-sheet-export)
 - [Unicode Coverage](#unicode-coverage)
 - [Docker Compose](#docker-compose)
   - [Basic One-Shot Task](#basic-one-shot-task)
@@ -36,6 +37,7 @@ Convert Minecraft's bitmap font glyphs into fully functional OpenType (`.otf`) o
 - **Debug SVG output** - Optionally dump per-glyph SVG files for visual inspection
 - **Non-interactive mode** - Fully scriptable with CLI arguments and environment variables for CI/CD and Docker workflows
 - **Resource pack support** - Merge custom font glyphs from any resource pack (e.g. server packs with icon fonts) into the generated files
+- **Bitmap sheet export** - Copy the vanilla font sheets byte-identical with a manifest of their provider metrics, for tools that consume the raw bitmaps
 
 ## Getting Started
 
@@ -164,6 +166,7 @@ CLI argument  >  Shell environment variable  >  .env file  >  config.py defaults
 | `--validate` | `MCFONT_VALIDATE` | Run FontForge validation after build (requires `fontforge`) | Disabled | `true` |
 | `--resource-pack` | `MCFONT_RESOURCE_PACKS` | Resource pack zip/directory to merge (repeatable; env var is `os.pathsep`-separated) | None | `packs/sb.zip` |
 | `--no-vertex-inset` | `MCFONT_NO_VERTEX_INSET` | Disable the 1-unit inset of vertices shared between contours (see note below) | Inset enabled | `true` |
+| `--emit-bitmap-sheets` | `MCFONT_EMIT_BITMAP_SHEETS` | Copy the vanilla bitmap font sheets and a provider manifest into `<output>/bitmap-sheets/` (see [Bitmap Sheet Export](#bitmap-sheet-export)) | Disabled | `true` |
 
 Boolean flags accept `1`, `true`, or `yes`. Valid styles: `regular`, `bold`,
 `italic`, `bolditalic`, `galactic`, `illageralt`.
@@ -216,6 +219,7 @@ MCFONT_TYPE=opentype
 MCFONT_SILENT=false
 MCFONT_VALIDATE=false
 MCFONT_NO_VERTEX_INSET=false
+MCFONT_EMIT_BITMAP_SHEETS=false
 ```
 
 Values from `.env` will **not** overwrite variables that already exist in your
@@ -282,6 +286,67 @@ output/
 The file extension is `.otf` for OpenType (CFF) or `.ttf` for TrueType,
 controlled by `--type` / `MCFONT_TYPE` (or the `OPENTYPE` constant in
 [`config.py`](minecraft_fontgen/config.py)).
+
+### Bitmap Sheet Export
+
+With `--emit-bitmap-sheets` (or `MCFONT_EMIT_BITMAP_SHEETS=1`), the tool also
+copies the vanilla bitmap font sheets referenced by the game's default font
+chain (`include/default.json`) into the output directory, alongside a manifest
+of their provider metrics. This runs in the same invocation as font
+generation and is intended for tools that consume the raw sheets, e.g.
+renderers resolving fonts that reference the vanilla sheets without shipping
+them.
+
+```
+output/
+└── bitmap-sheets/
+    ├── manifest.json
+    └── minecraft/
+        └── font/
+            ├── ascii.png
+            ├── accented.png
+            └── nonlatin_european.png
+```
+
+The PNGs are byte-identical copies of the client JAR assets (no reprocessing),
+written under their resource-location path (`<namespace>/<path>`).
+`manifest.json` lists the source game version and every bitmap provider in
+provider order, with its verbatim vanilla definition plus the SHA-256 of the
+emitted PNG:
+
+```json
+{
+  "game_version": "1.21.8",
+  "providers": [
+    {
+      "type": "bitmap",
+      "file": "minecraft:font/ascii.png",
+      "height": 8,
+      "ascent": 7,
+      "chars": ["\u0000\u0000!\"#$%...", "..."],
+      "sha256": "e8646f1ed1f4..."
+    }
+  ]
+}
+```
+
+- `height` is always explicit, including the JSON default of `8` when the
+  vanilla provider omits it. `ascent` is copied verbatim.
+- `chars` is the provider's verbatim rows array (one string per glyph row).
+- Non-bitmap providers (`space`, `unihex`, ...) are skipped.
+- Provider keys beyond `type`/`file`/`height`/`ascent`/`chars` (e.g. a
+  `filter` block) are not copied into the manifest; a warning names any such
+  key so drift in the vanilla chain is visible.
+- Unlike font generation, this mode **fails loudly**: a referenced sheet
+  missing from the assets, or a provider definition the game itself would
+  reject, exits nonzero with a clear error instead of skipping.
+- Requires the `include/default.json` font layout introduced in Minecraft
+  1.20. Older versions are detected via the legacy `glyph_sizes.bin` file
+  (which 1.13-1.19.4 still ship alongside their JSON providers) and rejected.
+
+> [!IMPORTANT]
+> The exported sheets are copyrighted Mojang assets, just like the generated
+> fonts. Do not redistribute them.
 
 ## Unicode Coverage
 

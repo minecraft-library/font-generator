@@ -79,3 +79,28 @@ def test_no_vertex_inset_env_falsy_keeps_inset(monkeypatch, value):
     _argv(monkeypatch)
     monkeypatch.setenv("MCFONT_NO_VERTEX_INSET", value)
     assert parse_args().inset_vertices is True
+
+
+def test_emit_bitmap_sheets_disabled_by_default(monkeypatch):
+    _argv(monkeypatch)
+    monkeypatch.delenv("MCFONT_EMIT_BITMAP_SHEETS", raising=False)
+    assert parse_args().emit_bitmap_sheets is False
+
+
+def test_emit_bitmap_sheets_flag_enables(monkeypatch):
+    _argv(monkeypatch, "--emit-bitmap-sheets")
+    assert parse_args().emit_bitmap_sheets is True
+
+
+@pytest.mark.parametrize("value", ["1", "true", "yes", "TRUE"])
+def test_emit_bitmap_sheets_env_enables(monkeypatch, value):
+    _argv(monkeypatch)
+    monkeypatch.setenv("MCFONT_EMIT_BITMAP_SHEETS", value)
+    assert parse_args().emit_bitmap_sheets is True
+
+
+@pytest.mark.parametrize("value", ["0", "false", "no", ""])
+def test_emit_bitmap_sheets_env_falsy_stays_off(monkeypatch, value):
+    _argv(monkeypatch)
+    monkeypatch.setenv("MCFONT_EMIT_BITMAP_SHEETS", value)
+    assert parse_args().emit_bitmap_sheets is False

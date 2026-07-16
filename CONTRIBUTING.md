@@ -243,6 +243,7 @@ minecraft_fontgen/
 ├── cli.py              # Argument parsing and env var resolution
 ├── config.py           # All constants and runtime configuration
 ├── asset_source.py     # Resource pack sources (dir/zip) and the layered asset stack
+├── bitmap_sheets.py    # Vanilla sheet export + provider manifest (--emit-bitmap-sheets)
 ├── piston.py           # Mojang Piston API interaction, JAR/unifont downloading
 ├── file_io.py          # Bitmap slicing, contour tracing, glyph map building
 ├── font_creator.py     # Batch font file creation across all styles
@@ -269,7 +270,8 @@ minecraft_fontgen/
 ```
 parse_args() → open_resource_pack() for each --resource-pack (exits cleanly
   on an invalid pack) → AssetStack([VanillaSource()] + packs) → clean_directories()
-  → download_minecraft_assets() → parse_provider_file() + collect_pack_providers()
+  → download_minecraft_assets() → emit_bitmap_sheets() (optional, with --emit-bitmap-sheets)
+  → parse_provider_file() + collect_pack_providers()
   → build_glyph_map() → stack.close() → create_font_files()
   → validate_fonts()  (optional, with --validate)
 ```
