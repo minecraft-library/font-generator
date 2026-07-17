@@ -1,7 +1,8 @@
 import io
 
 import numpy as np
-from PIL import Image
+import pytest
+from PIL import Image, ImageFile
 
 import minecraft_fontgen.config as config
 import minecraft_fontgen.file_io as file_io
@@ -9,6 +10,7 @@ from minecraft_fontgen.asset_source import AssetStack, DirAssetSource, ZipAssetS
 from minecraft_fontgen.file_io import (
     collect_color_providers,
     collect_pack_providers,
+    load_provider_rgba,
     parse_json_providers,
     parse_space_provider,
     slice_provider_tiles,
@@ -270,3 +272,61 @@ def test_flag_off_is_byte_identical(capsys, monkeypatch):
     assert providers[0]["name"]
     assert providers[0]["font_id"] is None
     assert "unsupported 'space'" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# texture decode robustness
+# ---------------------------------------------------------------------------
+
+def _truncated_png_bytes():
+    """A valid two-colour PNG cut off mid-IDAT (no IEND): the exact shape the
+    reference (HD) packs ship, which a strict decoder rejects."""
+    arr = np.zeros((8, 8, 4), np.uint8)
+    arr[:, :4] = (220, 40, 40, 255)
+    arr[:, 4:] = (40, 60, 220, 255)
+    buf = io.BytesIO()
+    Image.fromarray(arr, "RGBA").save(buf, "PNG")
+    good = buf.getvalue()
+    return good[: good.find(b"IDAT") + 8]
+
+
+def test_truncated_texture_decodes_not_fatal(tmp_path):
+    # The reference packs' font textures carry truncated zlib streams that a strict
+    # Pillow rejects; load_provider_rgba must recover the art rather than abort.
+    path = tmp_path / "trunc.png"
+    path.write_bytes(_truncated_png_bytes())
+
+    # prove the fixture actually needs the tolerance: strict Pillow rejects it
+    saved = ImageFile.LOAD_TRUNCATED_IMAGES
+    ImageFile.LOAD_TRUNCATED_IMAGES = False
+    try:
+        with pytest.raises(OSError):
+            Image.open(str(path)).convert("RGBA").load()
+    finally:
+        ImageFile.LOAD_TRUNCATED_IMAGES = saved
+
+    # the module enables the tolerance at import, so the real decode succeeds
+    image = load_provider_rgba({"name": "trunc", "file_path": str(path)})
+    assert image is not None
+    assert image.size == (8, 8)
+
+
+def test_corrupt_texture_warnskips_not_fatal(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(config, "SILENT_LOG", False)
+    monkeypatch.setattr(config, "COLOR_GLYPHS", True)
+    files = {
+        "pack.mcmeta": b'{"pack": {"pack_format": 88}}',
+        "assets/wy/font/icons.json": font_json_bytes([
+            {"type": "bitmap", "file": "wy:font/broken.png",
+             "ascent": 7, "height": 8, "chars": [chr(0xE000)]},
+        ]),
+        "assets/wy/textures/font/broken.png": b"this is not a valid png at all",
+    }
+    source = DirAssetSource(write_pack_dir(tmp_path / "d", files), "d")
+    stack = AssetStack([source])
+
+    # a single undecodable texture must warn-skip, never abort the whole colour pass
+    providers = collect_color_providers(stack)
+    tiles = [t for p in providers for t in p.get("tiles", [])]
+    assert tiles == []
+    assert "failed to decode" in capsys.readouterr().out

@@ -192,6 +192,42 @@ def test_hmtx_clamp_vs_sidecar_signed():
 
 
 # ---------------------------------------------------------------------------
+# advance / x-extent track the cell's display height (not a fixed 8px)
+# ---------------------------------------------------------------------------
+
+def test_raster_advance_tracks_display_height():
+    # A 32x32 cell shown at display height 32 (scale 1.0, but NOT the 8px base):
+    # its advance must be the full display footprint native_w * 128, which equals
+    # its vertical extent display_height * 128. The old formula used
+    # UNITS_PER_EM / native_h and silently assumed an 8px display, under-advancing
+    # by 8/display_height (here 4x: 1024 instead of 4096).
+    storage = build_color_font_storage([make_raster_tile(0xE020, flat_two_color_cell(32, 32), 32, 31)])
+    row = storage.sidecar_rows[0]
+    assert row["codepoint"] == 0xE020
+    expected = 32 * UNITS_PER_PIXEL_BASE          # native_w * 128 = 4096
+    vertical_extent = 32 * UNITS_PER_PIXEL_BASE   # display_height * 128 = 4096
+    assert row["advance"] == expected == vertical_extent
+    # regression guard against the display_height==8 assumption (would give 1024)
+    assert row["advance"] != int(round(32 * (UNITS_PER_EM / 32)))
+
+    gname = storage.font.getGlyphOrder()[storage.name_to_gid()[row["glyphName"]]]
+    assert storage.font["hmtx"].metrics[gname][0] == expected  # fits uint16, unclamped
+    # the advisory head bbox now encloses the true footprint (was under-synthesized)
+    assert storage.font["head"].xMax >= expected
+
+
+def test_raster_advance_display_scale_differs_from_native():
+    # display_height (32) != native_h (16) != 8: exercises the full display-scale
+    # factor 128 * display_height / native_h rather than a coincidental match.
+    storage = build_color_font_storage([make_raster_tile(0xE021, flat_two_color_cell(16, 16), 32, 15)])
+    row = storage.sidecar_rows[0]
+    upp = UNITS_PER_PIXEL_BASE * 32 / 16          # 256 units per native pixel
+    assert row["advance"] == int(round(16 * upp))  # 4096, the display footprint
+    # ppem follows 8 * native_h / display_height = 8 * 16 / 32 = 4
+    assert row["strike_ppem"] == 4
+
+
+# ---------------------------------------------------------------------------
 # content-hash dedup
 # ---------------------------------------------------------------------------
 

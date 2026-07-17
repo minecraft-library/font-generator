@@ -117,10 +117,18 @@ class GlyphStorage:
         The uint16 hmtx advance is clamped non-negative; the true signed advance
         rides in the sidecar row (the consumer positions from the sidecar because
         Java2D zeroes GlyphVector advances on any font carrying an sbix table)."""
-        upp = glyph.units_per_pixel
         native_w, native_h = glyph.raster_size
         display_height = glyph.display_height
         ascent = glyph.ascent
+
+        # Units per NATIVE pixel at the cell's display scale. The vertical model
+        # below spans display_height * UNITS_PER_PIXEL_BASE, so the horizontal
+        # advance and x-extent must use the same display-scale-aware factor.
+        # native_h and display_height routinely differ (a 256px cell shown at
+        # height 8, an icon shown at height 32), so glyph.units_per_pixel
+        # (UNITS_PER_EM / native_h) is wrong here: it silently assumes the cell
+        # is displayed at 8px and under-advances everything else by 8/display_height.
+        upp = UNITS_PER_PIXEL_BASE * display_height / native_h if native_h else UNITS_PER_PIXEL_BASE
 
         # Advance is the full cell footprint: art spaces by its own width. Negative
         # or fractional space-provider advances live in the sidecar, never here.

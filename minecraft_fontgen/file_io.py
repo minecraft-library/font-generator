@@ -9,11 +9,17 @@ import numpy as np
 
 from collections import defaultdict, deque, OrderedDict
 from tqdm import tqdm
-from PIL import Image
+from PIL import Image, ImageFile
 import minecraft_fontgen.config as config
 from minecraft_fontgen.asset_source import AssetStack, VanillaSource, split_resource_ref
 from minecraft_fontgen.config import ALT_FONT_IDS, ASCENT, BOLD_PACK_GLYPHS, COLOR_CLASSIFY_AA_FRAC_THRESHOLD, COLOR_CLASSIFY_AA_LOW_ALPHA, COLOR_CLASSIFY_MAX_MONO_DIM, COLOR_CLASSIFY_MIN_SIG_COLORS, COLOR_CLASSIFY_OPAQUE_ALPHA, COLOR_CLASSIFY_QUANT_SHIFT, COLOR_CLASSIFY_SIG_FRAC, COLOR_CLASSIFY_SIG_MIN_COUNT, COLOR_PNG_COMPRESS_LEVEL, DEFAULT_GLYPH_SIZE, INK_ALPHA_THRESHOLD, OUTPUT_DIR, MINECRAFT_JAR_DIR, PACK_FONT_IDS, WORK_DIR, UNITS_PER_EM, TEXTURE_PATH, FONT_STYLES
 from minecraft_fontgen.functions import get_unicode_codepoint, in_unifont_ranges, log, is_silent, parse_json, sanitize_fs_name
+
+# Reference (HD) packs ship font textures whose zlib/IDAT streams a strict decoder
+# rejects (the game's own loader tolerates them, and so must this tool). Allowing
+# truncated streams recovers the art for every such texture; clean vanilla sheets
+# decode identically, so the mono product is unchanged.
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
 # ==========================================
@@ -443,14 +449,13 @@ def slice_provider_tiles(providers, color_mode=False):
                 }
                 tiles.append(tile)
 
-                # Crop tile bitmap from full bitmap
-                tile["bitmap"] = crop_tile(bitmap, tile, save=debug_bmp and not color_mode)
-
                 if color_mode:
-                    # Branch before the destructive trace. A colour cell either
-                    # becomes a raster strike (its pixels kept verbatim as a PNG)
-                    # or falls through to the mono outline path. Hold at most one
-                    # cell's RGBA live: encode+hash, then drop it.
+                    # Branch before the binary crop and the destructive trace. A
+                    # colour cell either becomes a raster strike (its pixels kept
+                    # verbatim as a PNG) or falls through to the mono outline path.
+                    # Hold at most one cell's RGBA live: encode+hash, then drop it.
+                    # A raster tile never reaches the binary crop below, so it holds
+                    # only bytes + hash and never a redundant cropped bitmap image.
                     cell = crop_tile_rgba(rgba_sheet, tile)
                     if classify_render_mode(cell) == "raster":
                         cell_width, cell_height = cell.size
@@ -462,6 +467,9 @@ def slice_provider_tiles(providers, color_mode=False):
                         continue
                     tile["render_mode"] = "mono"
                     del cell
+
+                # Crop tile bitmap from full bitmap (mono outline path only)
+                tile["bitmap"] = crop_tile(bitmap, tile, save=debug_bmp and not color_mode)
 
                 # Trace contours for regular and bold styles
                 tile["pixels"] = trace_tile_contours(tile)
@@ -489,10 +497,20 @@ def load_provider_rgba(provider):
     This is the single decode that feeds both the binary crop and (on the colour
     path) every RGBA cell crop for the provider. It writes nothing to disk and is
     never stored on the provider dict, so the decoded sheet is collectable as soon
-    as the caller drops it."""
+    as the caller drops it.
+
+    A texture that cannot be decoded at all (genuinely corrupt beyond the
+    truncated-stream tolerance above) is warn-skipped by returning None rather
+    than aborting the whole run: colour mode decodes hundreds of pack textures,
+    so one bad file must never sink the build."""
     if not os.path.isfile(provider["file_path"]):
         return None
-    return Image.open(provider["file_path"]).convert("RGBA")
+    try:
+        return Image.open(provider["file_path"]).convert("RGBA")
+    except (OSError, ValueError, SyntaxError) as error:
+        log(f" → ⚠️ Skipping '{provider['name']}' (texture failed to decode: "
+            f"{provider['file_path']}: {error})")
+        return None
 
 def binarize_rgba(rgba):
     """Binarizes an already-decoded RGBA image to black ink on white.

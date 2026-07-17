@@ -172,6 +172,30 @@ def test_color_end_to_end_deterministic(monkeypatch):
     assert json_a == json_b
 
 
+def test_color_off_output_byte_identical(monkeypatch):
+    # The central additive-track guarantee: running the colour pass must not perturb
+    # the mono product one byte. Same synthetic pack, same fixed epoch, same mono
+    # TTF - the only difference is whether the colour ingestion runs alongside it.
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+
+    def build_mono(color_on, outdir):
+        monkeypatch.setattr(config, "COLOR_GLYPHS", color_on)
+        os.makedirs(outdir, exist_ok=True)
+        stack = AssetStack([FakeSource("vanilla", vanilla=True), _demo_pack()])
+        mono_providers = collect_pack_providers(stack)
+        if color_on:
+            # the colour ingestion runs in the same phase as the mono parse/slice;
+            # its side effects must not leak into the mono compilation
+            collect_color_providers(stack)
+        glyph_map = build_glyph_map(mono_providers, None, stack)
+        styles = [dict(s) for s in FONT_STYLES if s["name"] == "Regular"]
+        files = create_font_files(glyph_map, False, styles, outdir, OUTPUT_FONT_NAME, "ttf")
+        with open(files[0], "rb") as f:
+            return f.read()
+
+    assert build_mono(False, "mono_off") == build_mono(True, "mono_on")
+
+
 def test_colr_not_emitted(tmp_path):
     from helpers import make_raster_tile
 
