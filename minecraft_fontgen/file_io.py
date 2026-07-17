@@ -112,6 +112,46 @@ def collect_color_providers(stack):
     slice_provider_tiles([p for p in providers if p.get("type") != "space"], color_mode=True)
     return providers
 
+def build_color_glyph_map(providers):
+    """Groups the raster (colour) tiles by font id for the per-font-id colour compiler.
+
+    Returns {font_id: OrderedDict(codepoint -> tile)}, sorted by codepoint within
+    each font id, and {} when no tile classified raster. Within one font file the
+    last provider to define a codepoint wins (mirroring the game's first-wins walk
+    once providers are appended in reverse); across font ids codepoints stay
+    isolated in their own bucket, so the private-use codepoints reference packs
+    reuse across font files never collide. Space records carry no tiles and are
+    skipped here; their
+    advances reach the sidecar separately. The classifier having removed these
+    codepoints from the mono map is what keeps the mono fonts raster-free."""
+    buckets = defaultdict(dict)
+    for provider in providers:
+        for tile in provider.get("tiles", []):
+            if tile.get("render_mode") != "raster":
+                continue
+            buckets[tile["font_id"]][tile["codepoint"]] = tile
+
+    color_map = {}
+    for font_id, by_codepoint in buckets.items():
+        color_map[font_id] = OrderedDict(
+            sorted(by_codepoint.items(), key=lambda item: item[0])
+        )
+    return color_map
+
+def group_color_space_rows(providers):
+    """Groups space-provider advance rows by font id for the colour sidecar.
+
+    Returns {font_id: [(codepoint, advance), ...]}. Space codepoints mint no glyph,
+    so these rows ride into the sidecar via each font id's storage rather than the
+    glyph map. Advances are carried verbatim (signed, possibly fractional)."""
+    space_rows = defaultdict(list)
+    for provider in providers:
+        if provider.get("type") != "space":
+            continue
+        for codepoint, advance in provider.get("advances", []):
+            space_rows[provider.get("font_id")].append((codepoint, advance))
+    return dict(space_rows)
+
 def parse_bin_providers(byte_data):
     """Parses legacy binary glyph_sizes.bin format (Minecraft 1.8.9 and earlier).
 

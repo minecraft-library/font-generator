@@ -26,7 +26,7 @@ from minecraft_fontgen.cli import BuildOptions
 from helpers import FakeSource
 
 
-def _opts(resource_packs=(), validate=False):
+def _opts(resource_packs=(), validate=False, color_glyphs=False):
     return BuildOptions(
         silent=True,
         output_dir="output",
@@ -37,6 +37,7 @@ def _opts(resource_packs=(), validate=False):
         validate=validate,
         resource_packs=resource_packs,
         inset_vertices=True,
+        color_glyphs=color_glyphs,
     )
 
 
@@ -70,12 +71,41 @@ def _stub_pipeline(monkeypatch, calls):
         calls.append("create")
         return []
 
+    def collect_color_providers(stack):
+        calls.append("collect_color")
+        return []
+
+    def build_color_glyph_map(providers):
+        calls.append("build_color_map")
+        return {}
+
+    def group_color_space_rows(providers):
+        return {}
+
+    def create_color_font_files(color_glyph_map, space_by_font_id, output_dir, output_font_name):
+        calls.append("create_color")
+        return [("out/Minecraft-Color-wy_a.ttf", "wy:a")], [object()]
+
+    def build_sidecar(fonts, storages, epoch):
+        calls.append("build_sidecar")
+        return {}
+
+    def write_sidecar(sidecar, output_dir):
+        calls.append("write_sidecar")
+        return "out/colour-glyphs.json"
+
     monkeypatch.setattr(main_mod, "clean_directories", clean_directories)
     monkeypatch.setattr(main_mod, "download_minecraft_assets", download_minecraft_assets)
     monkeypatch.setattr(main_mod, "parse_provider_file", parse_provider_file)
     monkeypatch.setattr(main_mod, "collect_pack_providers", collect_pack_providers)
     monkeypatch.setattr(main_mod, "build_glyph_map", build_glyph_map)
     monkeypatch.setattr(main_mod, "create_font_files", create_font_files)
+    monkeypatch.setattr(main_mod, "collect_color_providers", collect_color_providers)
+    monkeypatch.setattr(main_mod, "build_color_glyph_map", build_color_glyph_map)
+    monkeypatch.setattr(main_mod, "group_color_space_rows", group_color_space_rows)
+    monkeypatch.setattr(main_mod, "create_color_font_files", create_color_font_files)
+    monkeypatch.setattr(main_mod, "build_sidecar", build_sidecar)
+    monkeypatch.setattr(main_mod, "write_sidecar", write_sidecar)
 
 
 def test_invalid_pack_exits_before_any_work(monkeypatch):
@@ -139,6 +169,46 @@ def test_stack_closes_when_download_fails(monkeypatch):
     assert "parse" not in calls
     assert fakes["p1"].closed
     assert fakes["p2"].closed
+
+
+def test_main_dispatches_color_after_build(monkeypatch):
+    import minecraft_fontgen.config as config
+
+    calls = []
+    monkeypatch.setattr(config, "COLOR_GLYPHS", False)
+    monkeypatch.setattr(main_mod, "parse_args", lambda: _opts(color_glyphs=True))
+    monkeypatch.setattr(main_mod, "open_resource_pack", lambda path: FakeSource(path))
+    _stub_pipeline(monkeypatch, calls)
+
+    main_mod.main()
+
+    # colour is ingested after the pack providers and the mono build; the colour
+    # compile + sidecar run strictly after the mono create; mono still runs.
+    assert "create" in calls
+    assert calls.index("collect_color") > calls.index("collect")
+    assert calls.index("create_color") > calls.index("create")
+    assert calls.index("build_sidecar") > calls.index("create_color")
+    assert calls.index("write_sidecar") > calls.index("build_sidecar")
+    # the flag was mirrored onto the module config the ingestion helpers read
+    assert config.COLOR_GLYPHS is True
+
+
+def test_color_off_skips_color_and_keeps_mono(monkeypatch):
+    import minecraft_fontgen.config as config
+
+    calls = []
+    monkeypatch.setattr(config, "COLOR_GLYPHS", False)
+    monkeypatch.setattr(main_mod, "parse_args", lambda: _opts(color_glyphs=False))
+    monkeypatch.setattr(main_mod, "open_resource_pack", lambda path: FakeSource(path))
+    _stub_pipeline(monkeypatch, calls)
+
+    main_mod.main()
+
+    # colour off: none of the colour collaborators run, the mono create still does
+    assert "create" in calls
+    for colour_call in ("collect_color", "create_color", "build_sidecar", "write_sidecar"):
+        assert colour_call not in calls
+    assert config.COLOR_GLYPHS is False
 
 
 def test_second_pack_open_failure_closes_first(monkeypatch):
