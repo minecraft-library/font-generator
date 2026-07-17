@@ -64,3 +64,87 @@ class FakeSource:
 
     def close(self):
         self.closed = True
+
+
+# ---------------------------------------------------------------------------
+# colour-glyph (sbix) test infrastructure
+# ---------------------------------------------------------------------------
+
+def color_cell(width, height, pixels, base=(0, 0, 0, 0)):
+    """RGBA PIL image on a `base` canvas with {(x, y): (r, g, b, a)} painted."""
+    img = Image.new("RGBA", (width, height), base)
+    for (x, y), rgba in pixels.items():
+        img.putpixel((x, y), rgba)
+    return img
+
+
+def flat_two_color_cell(width, height, left=(220, 40, 40, 255), right=(40, 60, 220, 255)):
+    """Opaque cell split into two vertical colour bands (a classic raster icon)."""
+    img = Image.new("RGBA", (width, height), left)
+    for x in range(width // 2, width):
+        for y in range(height):
+            img.putpixel((x, y), right)
+    return img
+
+
+def make_raster_tile(codepoint, cell, display_height, ascent, font_id="test:demo"):
+    """Builds a raster tile dict shaped exactly like slice_provider_tiles emits one,
+    encoding + hashing the cell through the real file_io helpers."""
+    from minecraft_fontgen.file_io import encode_cell_png, raster_cell_hash
+
+    width, height = cell.size
+    return {
+        "unicode": chr(codepoint),
+        "codepoint": codepoint,
+        "size": (width, height),
+        "display_height": display_height,
+        "ascent": ascent,
+        "font_id": font_id,
+        "location": (0, 0),
+        "render_mode": "raster",
+        "raster_png": encode_cell_png(cell),
+        "content_hash": raster_cell_hash(cell),
+        "raster_size": (width, height),
+    }
+
+
+def build_color_font_storage(tiles):
+    """Assembles a single colour TrueType font from raster tile dicts and returns the
+    finalized GlyphStorage (mirrors the per-font-id table set the colour compiler uses)."""
+    from fontTools.ttLib import TTFont
+
+    from minecraft_fontgen.table.header import create_font_header_table
+    from minecraft_fontgen.table.horizontal_header import create_font_hheader_table
+    from minecraft_fontgen.table.maximum_profile import create_font_mprofile_table
+    from minecraft_fontgen.table.postscript import create_font_pscript_table
+    from minecraft_fontgen.table.horizontal_metrics import create_font_hmetrics_table
+    from minecraft_fontgen.table.name import create_font_name_table
+    from minecraft_fontgen.table.os2_metrics import create_font_metrics_table
+    from minecraft_fontgen.table.glyph_mappings import create_font_mapping_table
+    from minecraft_fontgen.table.truetype import create_tt_font_tables
+    from minecraft_fontgen.glyph.glyph_storage import GlyphStorage
+
+    font = TTFont()
+    create_font_header_table(font, use_cff=False)
+    create_font_hheader_table(font, use_cff=False)
+    create_font_mprofile_table(font, use_cff=False)
+    create_font_pscript_table(font, use_cff=False)
+    create_font_hmetrics_table(font)
+    create_font_name_table(font, False, False)
+    create_font_metrics_table(font)
+    create_font_mapping_table(font)
+    create_tt_font_tables(font)
+
+    storage = GlyphStorage(font, use_cff=False, color_mode=True)
+    for tile in tiles:
+        storage.add(storage.create_glyph(tile))
+    storage.add_notdef()
+    storage.finalize()
+    return storage
+
+
+def compiled_font_bytes(storage):
+    """Compiles a finalized storage's font to bytes and returns them."""
+    buf = io.BytesIO()
+    storage.font.save(buf)
+    return buf.getvalue()

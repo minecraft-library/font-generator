@@ -13,6 +13,10 @@ class Glyph:
 
     def __init__(self, tile, use_cff: bool = True):
         """Initializes a glyph from tile data, creating a drawing pen and handling .notdef."""
+        # Raster (colour) tiles carry a verbatim RGBA cell PNG that rides in an
+        # sbix strike; their glyf outline stays empty and they have no traced
+        # pixel/contour data. Resolve this first so every field below can branch.
+        self.is_raster = tile.get("render_mode") == "raster"
         self.unicode = tile["unicode"]
         self.codepoint = self._get_codepoint() if "codepoint" not in tile else tile["codepoint"]
         self.use_cff = use_cff
@@ -21,8 +25,16 @@ class Glyph:
         self.size = tile["size"] or (DEFAULT_GLYPH_SIZE, DEFAULT_GLYPH_SIZE)
         self.ascent = tile["ascent"] if "ascent" in tile else 0
 
-        # Pixels
-        self.pixels = tile["pixels"] if "pixels" in tile else []
+        if self.is_raster:
+            self.raster_png = tile["raster_png"]
+            self.raster_size = tile["raster_size"]
+            self.font_id = tile.get("font_id")
+            self.display_height = tile["display_height"]
+            self.content_hash = tile["content_hash"]
+
+        # Pixels (empty for raster tiles, which carry no traced contours; the
+        # .get(...) or {} guard keeps membership/index reads below KeyError-free)
+        self.pixels = tile.get("pixels") or {}
         self.width = self.pixels["width"] if "width" in self.pixels else DEFAULT_GLYPH_SIZE
         self.advance = self.pixels["advance"] if "advance" in self.pixels else DEFAULT_GLYPH_SIZE
         self.lsb = self.pixels["lsb"] if "lsb" in self.pixels else 0
@@ -77,6 +89,10 @@ class Glyph:
 
     def _new_pen(self):
         """Creates a new fontTools drawing pen (T2CharStringPen for CFF, TTGlyphPen for TrueType)."""
+        if self.is_raster:
+            # Raster glyphs stay empty-outline; the advance is sourced in
+            # GlyphStorage.add from the cell footprint, not from the pen.
+            return TTGlyphPen(None)
         if self.use_cff:
             if self.codepoint == 0x0020:
                 advance_width = UNITS_PER_EM // 2
