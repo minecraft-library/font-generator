@@ -14,6 +14,12 @@ from minecraft_fontgen.functions import log
 
 INT16_MIN = -0x8000
 INT16_MAX = 0x7FFF
+UINT16_MAX = 0xFFFF
+
+
+def _clamp(value, low, high):
+    """Clamps value into the inclusive [low, high] range."""
+    return max(low, min(high, value))
 
 class GlyphStorage:
     """Accumulates drawn glyphs, manages cmap entries, and writes final font data."""
@@ -308,6 +314,15 @@ class GlyphStorage:
         self.font["maxp"].recalc(self.font)
 
         # 5. Build the sbix table, one strike per display-scale ppem.
+        #
+        # sbix (verbatim per-cell RGBA PNG) is the chosen colour format. COLR/CPAL
+        # is rejected on two counts: the packs' colour is baked raster, not
+        # parametric vector (COLR would need lossy per-plane vectorization that
+        # explodes on gradients), and Java2D renders COLRv0 as a mono black outline
+        # so it would not even show in the target consumer. CBDT/CBLC is a non-goal:
+        # fontTools ships no writer for the colour CBDT formats, and CBDT's uint8
+        # glyph height overflows at the 256px art sbix carries. A test pins that no
+        # COLR/CPAL/CBDT/CBLC table is emitted.
         sbix = newTable("sbix")
         sbix.version = 1
         sbix.flags = 1  # bit0 only; the glyf glyphs are empty so no outline draws
@@ -325,27 +340,35 @@ class GlyphStorage:
 
         # 6. Re-synthesize the bbox that maxp.recalc just clobbered so tall art (whose
         #    contours are empty) is enclosed by head and the Windows clipping metrics.
+        # head's bbox fields are int16 and the OS/2 clipping metrics are uint16, so
+        # very tall/wide art (a large display height puts extents past 256px * 128
+        # upp) is clamped to the field range; the exact geometry lives in the sbix
+        # strikes and the sidecar, so a saturated advisory bbox loses nothing.
         head = self.font["head"]
         os2 = self.font["OS/2"]
         if self.raster_y_top is not None:
-            head.yMax = max(head.yMax, ceil(self.raster_y_top))
-            os2.usWinAscent = max(os2.usWinAscent, ceil(self.raster_y_top))
+            head.yMax = _clamp(max(head.yMax, ceil(self.raster_y_top)), INT16_MIN, INT16_MAX)
+            os2.usWinAscent = _clamp(max(os2.usWinAscent, ceil(self.raster_y_top)), 0, UINT16_MAX)
         if self.raster_y_bot is not None:
-            head.yMin = min(head.yMin, floor(self.raster_y_bot))
+            head.yMin = _clamp(min(head.yMin, floor(self.raster_y_bot)), INT16_MIN, INT16_MAX)
             if self.raster_y_bot < 0:
-                os2.usWinDescent = max(os2.usWinDescent, ceil(-self.raster_y_bot))
-        head.xMax = max(head.xMax, ceil(self.raster_x_max))
+                os2.usWinDescent = _clamp(max(os2.usWinDescent, ceil(-self.raster_y_bot)), 0, UINT16_MAX)
+        head.xMax = _clamp(max(head.xMax, ceil(self.raster_x_max)), INT16_MIN, INT16_MAX)
 
         # 7. Metrics (maxp.recalc already set numGlyphs; restate for symmetry).
+        #    The OS/2 char-index fields are uint16 and xAvgCharWidth is int16, so an
+        #    SMP colour codepoint or a very wide cell advance is clamped to the field
+        #    range (the spec's own rule for usLastCharIndex past U+FFFF is 0xFFFF).
         total_glyphs = len(self.glyphs)
         self.font["hhea"].numberOfHMetrics = total_glyphs
         self.font["maxp"].numGlyphs = total_glyphs
-        self.font["OS/2"].usFirstCharIndex = self.cpr[0]
-        self.font["OS/2"].usLastCharIndex = self.cpr[1]
+        self.font["OS/2"].usFirstCharIndex = _clamp(self.cpr[0], 0, UINT16_MAX)
+        self.font["OS/2"].usLastCharIndex = _clamp(self.cpr[1], 0, UINT16_MAX)
 
         advances = [aw for (aw, _lsb) in self.hmtx.values() if aw is not None]
         if advances:
-            self.font["OS/2"].xAvgCharWidth = int(round(sum(advances) / len(advances)))
+            mean_advance = int(round(sum(advances) / len(advances)))
+            self.font["OS/2"].xAvgCharWidth = _clamp(mean_advance, INT16_MIN, INT16_MAX)
 
     def save(self, output_file):
         """Saves the assembled font to an output file."""

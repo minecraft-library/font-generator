@@ -127,6 +127,27 @@ def test_bbox_covers_tall_256px_art():
     assert reopened["head"].yMax >= expected_top
 
 
+def test_bbox_clamped_for_oversized_display():
+    # A large display height (512) with a small ascent pushes the descent extent
+    # past the int16 head range, and a wide cell pushes the mean advance past the
+    # int16 xAvgCharWidth range. Both must clamp so save() does not raise (real HD
+    # packs ship such cells).
+    cell = _big_opaque_cell(512).crop((0, 0, 600, 512))  # 600 wide x 512 tall, opaque
+    storage = build_color_font_storage([make_raster_tile(0xE00A, cell, 512, 8)])
+    head = storage.font["head"]
+    os2 = storage.font["OS/2"]
+    # descent extent (8 - 512) * 128 = -64512 saturates to the int16 floor
+    assert head.yMin == -0x8000
+    assert -0x8000 <= head.yMax <= 0x7FFF
+    assert -0x8000 <= head.xMax <= 0x7FFF
+    assert -0x8000 <= os2.xAvgCharWidth <= 0x7FFF
+    assert 0 <= os2.usWinAscent <= 0xFFFF
+    assert 0 <= os2.usWinDescent <= 0xFFFF
+    # the whole font still saves and reopens (the failure mode was a save crash)
+    reopened = _reopen(storage)
+    assert reopened["head"].yMin == -0x8000
+
+
 def test_maxp_recalc_mixed_glyf_sbix():
     tiles = [
         make_raster_tile(0xE001, flat_two_color_cell(8, 8), 8, 7),

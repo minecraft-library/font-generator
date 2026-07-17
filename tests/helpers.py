@@ -148,3 +148,41 @@ def compiled_font_bytes(storage):
     buf = io.BytesIO()
     storage.font.save(buf)
     return buf.getvalue()
+
+
+def make_color_png_bytes(width, height, colored_pixels):
+    """PNG bytes of a transparent RGBA canvas with {(x, y): (r, g, b, a)} painted.
+
+    Unlike make_png_bytes it splices no tEXt marker: colour cells are re-encoded
+    crops verified by pixel-equality, not byte-identity, so a synthetic marker
+    would only pollute the ancillary-chunk assertions."""
+    img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    for (x, y), rgba in colored_pixels.items():
+        img.putpixel((x, y), rgba)
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def two_color_block_png(width, height, left=(220, 40, 40, 255), right=(40, 60, 220, 255)):
+    """PNG bytes of an opaque cell split into two vertical colour bands (raster icon)."""
+    return make_color_png_bytes(width, height, {
+        (x, y): (left if x < width // 2 else right)
+        for x in range(width) for y in range(height)
+    })
+
+
+def color_pack_source(font_id, cells, space_advances=None,
+                      name="colorpack", height=8, ascent=7):
+    """A FakeSource carrying one colour font file: a single-cell bitmap provider per
+    (texture_ref -> (char, png_bytes)) entry plus an optional space provider.
+    Everything is synthetic - no real pack assets."""
+    providers = []
+    textures = {}
+    for ref, (char, png) in cells.items():
+        providers.append({"type": "bitmap", "file": ref, "ascent": ascent,
+                          "height": height, "chars": [char]})
+        textures[ref] = png
+    if space_advances:
+        providers.append({"type": "space", "advances": space_advances})
+    return FakeSource(name, fonts={font_id: font_json_bytes(providers)}, textures=textures)
