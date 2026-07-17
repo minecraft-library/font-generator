@@ -8,9 +8,7 @@ def create_font_header_table(font, use_cff: bool = True):
     head = font["head"] = newTable("head")
     head.checkSumAdjustment = 0 # Used to ensure the font has a valid file checksum (recalculated automatically)
     # head timestamps are seconds since the 1904 Mac epoch. now is already a Unix
-    # timestamp, so the Unix->Mac delta is exactly the constant MAC_EPOCH; do NOT
-    # subtract mktime(gmtime(0)), which reinterprets the UTC epoch as local time
-    # and makes head.created timezone-dependent (nondeterministic across machines).
+    # timestamp, so the Unix->Mac delta is exactly the constant MAC_EPOCH.
     head.created = now + MAC_EPOCH # Creation timestamp of the font
     head.flags = 11 # Bit flags that define font-wide behavior (e.g., baseline, left sidebearing point at x=0)
     head.fontRevision = 1.0

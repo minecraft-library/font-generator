@@ -155,6 +155,9 @@ SOURCE_DATE_EPOCH = None  # Fixed build epoch for reproducible builds; None keep
 COLOR_GLYPHS = False  # True enables the additive colour-glyph track
 SBIX_GRAPHIC_TYPE = "png "  # sbix graphicType tag (trailing space is significant)
 SBIX_RESOLUTION = 72  # sbix strike resolution in ppi
+SBIX_INT16_MIN = -0x8000  # clamp floor for int16 sbix/head fields (originOffset, bbox)
+SBIX_INT16_MAX = 0x7FFF  # clamp ceiling for int16 sbix/head fields
+SBIX_UINT16_MAX = 0xFFFF  # clamp ceiling for uint16 fields (usWin metrics, char indices)
 COLOR_SIDECAR_NAME = "colour-glyphs.json"  # shared versioned sidecar filename
 COLOR_OUTPUT_INFIX = "Color"  # infix in the single per-pack colour output filename (Minecraft-Color.ttf)
 # Stored-codepoint plane window. Every (font_id, original_codepoint) raster pair is
