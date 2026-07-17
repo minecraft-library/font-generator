@@ -1,14 +1,18 @@
+import hashlib
+import io
 import math
 import os
 import shutil
+import struct
 import sys
 import numpy as np
 
 from collections import defaultdict, deque, OrderedDict
 from tqdm import tqdm
 from PIL import Image
+import minecraft_fontgen.config as config
 from minecraft_fontgen.asset_source import AssetStack, VanillaSource, split_resource_ref
-from minecraft_fontgen.config import ALT_FONT_IDS, ASCENT, BOLD_PACK_GLYPHS, DEFAULT_GLYPH_SIZE, INK_ALPHA_THRESHOLD, OUTPUT_DIR, MINECRAFT_JAR_DIR, PACK_FONT_IDS, WORK_DIR, UNITS_PER_EM, TEXTURE_PATH, FONT_STYLES
+from minecraft_fontgen.config import ALT_FONT_IDS, ASCENT, BOLD_PACK_GLYPHS, COLOR_CLASSIFY_AA_FRAC_THRESHOLD, COLOR_CLASSIFY_AA_LOW_ALPHA, COLOR_CLASSIFY_MAX_MONO_DIM, COLOR_CLASSIFY_MIN_SIG_COLORS, COLOR_CLASSIFY_OPAQUE_ALPHA, COLOR_CLASSIFY_QUANT_SHIFT, COLOR_CLASSIFY_SIG_FRAC, COLOR_CLASSIFY_SIG_MIN_COUNT, COLOR_PNG_COMPRESS_LEVEL, DEFAULT_GLYPH_SIZE, INK_ALPHA_THRESHOLD, OUTPUT_DIR, MINECRAFT_JAR_DIR, PACK_FONT_IDS, WORK_DIR, UNITS_PER_EM, TEXTURE_PATH, FONT_STYLES
 from minecraft_fontgen.functions import get_unicode_codepoint, in_unifont_ranges, log, is_silent, parse_json, sanitize_fs_name
 
 
@@ -325,6 +329,23 @@ def slice_provider_tiles(providers, color_mode=False):
                 # Crop tile bitmap from full bitmap
                 tile["bitmap"] = crop_tile(bitmap, tile, save=debug_bmp and not color_mode)
 
+                if color_mode:
+                    # Branch before the destructive trace. A colour cell either
+                    # becomes a raster strike (its pixels kept verbatim as a PNG)
+                    # or falls through to the mono outline path. Hold at most one
+                    # cell's RGBA live: encode+hash, then drop it.
+                    cell = crop_tile_rgba(rgba_sheet, tile)
+                    if classify_render_mode(cell) == "raster":
+                        cell_width, cell_height = cell.size
+                        tile["render_mode"] = "raster"
+                        tile["raster_png"] = encode_cell_png(cell)
+                        tile["content_hash"] = raster_cell_hash(cell)
+                        tile["raster_size"] = (cell_width, cell_height)
+                        del cell
+                        continue
+                    tile["render_mode"] = "mono"
+                    del cell
+
                 # Trace contours for regular and bold styles
                 tile["pixels"] = trace_tile_contours(tile)
 
@@ -425,6 +446,83 @@ def crop_tile_rgba(rgba_sheet, tile):
     consumes it immediately (classify/encode/hash) and drops it so at most one
     cell's RGBA is ever live."""
     return rgba_sheet.crop(_tile_box(tile))
+
+def classify_render_mode(rgba_cell):
+    """Decides whether a colour cell keeps its pixels (raster) or reduces to a
+    mono outline. Returns 'mono' or 'raster'.
+
+    The taxonomy is checked cheapest-first: a fully transparent cell is mono (it
+    mints no glyph either way); a cell larger than COLOR_CLASSIFY_MAX_MONO_DIM on
+    either axis is raster unconditionally, so huge art skips the O(pixels)
+    colour/anti-alias scan entirely; a cell whose non-transparent pixels are more
+    than COLOR_CLASSIFY_AA_FRAC_THRESHOLD anti-aliased is raster; otherwise the
+    cell is raster only when it carries at least COLOR_CLASSIFY_MIN_SIG_COLORS
+    significant opaque colours (quantized to COLOR_CLASSIFY_QUANT_SHIFT bits per
+    channel). Everything else is a flat single-colour shape the mono outline path
+    reproduces losslessly."""
+    arr = np.asarray(rgba_cell)
+    alpha = arr[:, :, 3].astype(int)
+    nontrans = int((alpha > 0).sum())
+    if nontrans == 0:
+        return "mono"
+
+    cell_w, cell_h = rgba_cell.size
+    if max(cell_w, cell_h) > COLOR_CLASSIFY_MAX_MONO_DIM:
+        return "raster"
+
+    aa = int(((alpha > COLOR_CLASSIFY_AA_LOW_ALPHA) & (alpha < COLOR_CLASSIFY_OPAQUE_ALPHA)).sum())
+    if aa / nontrans > COLOR_CLASSIFY_AA_FRAC_THRESHOLD:
+        return "raster"
+
+    opaque_mask = alpha >= COLOR_CLASSIFY_OPAQUE_ALPHA
+    opaque = int(opaque_mask.sum())
+    if opaque == 0:
+        return "mono"
+
+    quant = (arr[:, :, :3][opaque_mask].astype(int) >> COLOR_CLASSIFY_QUANT_SHIFT)
+    keys = (quant[:, 0] << 8) | (quant[:, 1] << 4) | quant[:, 2]
+    _, counts = np.unique(keys, return_counts=True)
+    threshold = max(COLOR_CLASSIFY_SIG_MIN_COUNT, opaque * COLOR_CLASSIFY_SIG_FRAC)
+    significant = int((counts >= threshold).sum())
+    return "raster" if significant >= COLOR_CLASSIFY_MIN_SIG_COLORS else "mono"
+
+def _canonical_rgba_array(rgba_cell):
+    """Returns the cell as an HxWx4 uint8 array with every fully transparent pixel
+    forced to (0, 0, 0, 0). Shared by the PNG encoder and the content hash so the
+    embedded bytes and the dedup digest always agree on the same pixels, and so
+    invisible transparent-RGB garbage never splits a dedup group or perturbs the
+    output across Pillow/zlib versions."""
+    array = np.asarray(rgba_cell.convert("RGBA")).copy()
+    array[array[:, :, 3] == 0] = (0, 0, 0, 0)
+    return array
+
+def encode_cell_png(rgba_cell):
+    """Encodes a colour cell to deterministic lossless RGBA PNG bytes.
+
+    Reconstructing the image from the canonicalized raw array drops any inherited
+    icc/dpi/tEXt metadata, and saving with no pnginfo leaves only IHDR/IDAT/IEND,
+    so two builds of the same pixels under a fixed Pillow+zlib are byte-identical.
+    The zlib level affects only file size (the dedup hash is taken over the
+    pre-encode array), so it stays at the size/speed default."""
+    clean = Image.fromarray(_canonical_rgba_array(rgba_cell), "RGBA")
+    buffer = io.BytesIO()
+    clean.save(buffer, "PNG", optimize=False, compress_level=COLOR_PNG_COMPRESS_LEVEL)
+    return buffer.getvalue()
+
+def normalized_cell_bytes(cell):
+    """Returns the digest input for a colour cell: its big-endian width and height
+    followed by the canonical RGBA bytes. Folding the dimensions into the digest
+    means two differently-sized cells that happen to share a byte prefix can never
+    collide."""
+    array = _canonical_rgba_array(cell)
+    height, width = array.shape[:2]
+    return struct.pack(">II", width, height) + array.tobytes()
+
+def raster_cell_hash(cell):
+    """Returns the content hash stamped on a raster tile: sha256 over the
+    normalized RGBA bytes (not the PNG bytes), so the dedup key survives PNG
+    encoder drift."""
+    return hashlib.sha256(normalized_cell_bytes(cell)).hexdigest()
 
 def trace_tile_contours(tile):
     """Traces contours from a tile's bitmap for both regular and bold styles."""
