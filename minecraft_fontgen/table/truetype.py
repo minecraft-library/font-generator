@@ -5,7 +5,10 @@ from fontTools.ttLib.tables.ttProgram import Program
 
 def create_tt_font_tables(font):
     """Creates TrueType outline tables (glyf, loca) with FontForge compatibility stubs."""
-    font.sfntVersion = 0x00010000
+    # sfntVersion must be the 4-char Tag string, not the int 0x00010000. fontTools
+    # 4.63 save() validates the string tags (sfnt.py) and raises TTLibError('bad
+    # sfntVersion') on the int form, which silently broke the TrueType path.
+    font.sfntVersion = "\x00\x01\x00\x00"
     font["glyf"] = newTable("glyf")
     font["glyf"].glyphs = {}
 

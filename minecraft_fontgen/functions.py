@@ -4,8 +4,28 @@ import re
 import requests
 import subprocess
 import sys
+import time
 
 import minecraft_fontgen.config as config
+
+def resolve_source_date_epoch() -> int:
+    """Resolves the build timestamp used for reproducible builds.
+
+    Resolution order: the SOURCE_DATE_EPOCH environment variable (the
+    reproducible-builds standard name) when set and integer-parseable; else
+    config.SOURCE_DATE_EPOCH when it is not None; else the current wall-clock
+    time. A non-integer environment value fails loud so a mistyped epoch never
+    silently degrades to a live timestamp. Lives here rather than in the header
+    module to avoid header<->config coupling."""
+    raw = os.environ.get("SOURCE_DATE_EPOCH")
+    if raw is not None:
+        try:
+            return int(raw)
+        except ValueError:
+            raise SystemExit(f"SOURCE_DATE_EPOCH must be an integer, got {raw!r}")
+    if config.SOURCE_DATE_EPOCH is not None:
+        return int(config.SOURCE_DATE_EPOCH)
+    return int(time.time())
 
 def set_silent(value):
     """Sets the global silent mode flag."""
