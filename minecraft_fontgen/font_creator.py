@@ -1,11 +1,11 @@
-import hashlib
 import sys
 
 from fontTools.ttLib import TTFont
 from tqdm import tqdm
 
 from minecraft_fontgen.config import COLOR_OUTPUT_INFIX
-from minecraft_fontgen.functions import log, is_silent, sanitize_fs_name
+from minecraft_fontgen.functions import log, is_silent
+from minecraft_fontgen.stored_codepoint import allocate_stored_codepoints
 
 from minecraft_fontgen.glyph.glyph_storage import GlyphStorage
 from minecraft_fontgen.table.glyph_mappings import create_font_mapping_table
@@ -102,65 +102,71 @@ def create_font_files(glyph_map, use_cff, output_fonts, output_dir, output_font_
 
 
 def create_color_font_files(color_glyph_map, space_by_font_id, output_dir, output_font_name):
-    """Compiles one colour (sbix) TrueType font per pack font id, plus the finalized
-    storages the JSON sidecar is assembled from.
+    """Compiles ONE colour (sbix) TrueType font for the whole pack, plus the finalized
+    storage the JSON sidecar is assembled from.
 
     This is a separate single-Regular emission that never touches create_font_files
     or its four-style fan-out: bold smears a bitmap grid and italic is a vector
-    shear, both meaningless on a raster cell, so colour is Regular-only. Each font's
-    glyph set is seeded ONLY from that font id's raster tiles plus .notdef (no
-    vanilla/unifont clone), so numGlyphs stays tiny and far under the 65535 ceiling.
+    shear, both meaningless on a raster cell, so colour is Regular-only. The glyph
+    set is seeded ONLY from the packs' raster tiles plus .notdef (no vanilla/unifont
+    clone), so numGlyphs stays far under the 65535 ceiling.
 
-    A font id that contributes only space-provider advances mints no glyph and so no
-    .ttf, but its storage still rides in the returned list so its sidecar rows are
-    not lost. Output names are pack-qualified (`{name}-Color-{font_id}.ttf`); on the
-    rare event two font ids sanitize to the same base, the later one gains a short
-    stable sha1(font_id) suffix. Returns (color_files, storages) where color_files is
-    the list of (path, font_id) for the files actually written."""
+    Every (font_id, original_codepoint) raster pair is assigned a synthetic STORED
+    codepoint from plane 15/16 (see stored_codepoint.allocate_stored_codepoints), so
+    codepoints that different font ids reuse coexist in one cmap. Pack-wide content
+    dedup collapses identical art across font ids to one glyph (many sidecar rows may
+    share a gid). Font ids that contribute only space-provider advances mint no glyph
+    but their rows still ride in the returned storage.
+
+    The output is a single `{name}-Color.ttf`. Returns (color_file, storage), where
+    color_file is the written path or None (space-only: no strikes, no .ttf) and
+    storage is the finalized GlyphStorage or None (nothing to emit at all)."""
     if not color_glyph_map and not space_by_font_id:
         log("→ ℹ️ No colour glyphs to emit.")
-        return [], []
+        return None, None
 
-    log("🎨 Creating colour (sbix) font files...")
-    color_files = []
-    storages = []
-    seen_names = set()
+    log("🎨 Creating the colour (sbix) font file...")
 
-    for font_id in sorted(set(color_glyph_map) | set(space_by_font_id)):
-        font = TTFont()
-        create_font_header_table(font, use_cff=False)
-        create_font_hheader_table(font, use_cff=False)
-        create_font_mprofile_table(font, use_cff=False)
-        create_font_pscript_table(font, use_cff=False)
-        create_font_hmetrics_table(font)
-        create_font_name_table(font, bold=False, italic=False, family_qualifier=font_id)
-        create_font_metrics_table(font)
-        create_font_mapping_table(font)
-        create_tt_font_tables(font)
+    font = TTFont()
+    create_font_header_table(font, use_cff=False)
+    create_font_hheader_table(font, use_cff=False)
+    create_font_mprofile_table(font, use_cff=False)
+    create_font_pscript_table(font, use_cff=False)
+    create_font_hmetrics_table(font)
+    create_font_name_table(font, bold=False, italic=False, family_qualifier=COLOR_OUTPUT_INFIX)
+    create_font_metrics_table(font)
+    create_font_mapping_table(font)
+    create_tt_font_tables(font)
 
-        storage = GlyphStorage(font, use_cff=False, color_mode=True)
-        for tile in color_glyph_map.get(font_id, {}).values():
-            storage.add(storage.create_glyph(tile))
-        for codepoint, advance in space_by_font_id.get(font_id, []):
+    storage = GlyphStorage(font, use_cff=False, color_mode=True)
+
+    # Deterministic stored-codepoint allocation: sort the raster pairs by
+    # (font_id, original_codepoint) and assign linearly from U+F0000. Same input ->
+    # byte-identical font + sidecar.
+    pairs = [(font_id, codepoint)
+             for font_id in sorted(color_glyph_map)
+             for codepoint in sorted(color_glyph_map[font_id])]
+    stored_by_pair = allocate_stored_codepoints(pairs)
+    for font_id, codepoint in pairs:
+        tile = dict(color_glyph_map[font_id][codepoint])
+        tile["stored_codepoint"] = stored_by_pair[(font_id, codepoint)]
+        storage.add(storage.create_glyph(tile))
+
+    # Space rows (no glyph) in a stable (font_id, codepoint) order.
+    for font_id in sorted(space_by_font_id):
+        for codepoint, advance in space_by_font_id[font_id]:
             storage.add_space_row(font_id, codepoint, advance)
-        storage.add_notdef()
-        storage.finalize()
-        storages.append(storage)
 
-        # A font id with no raster strikes contributes only sidecar rows; emitting a
-        # glyphless .ttf for it would be dead weight, so skip the file (keep the rows).
-        if not storage.sbix_strikes:
-            continue
+    storage.add_notdef()
+    storage.finalize()
 
-        base = f"{output_font_name}-{COLOR_OUTPUT_INFIX}-{sanitize_fs_name(font_id)}"
-        if base in seen_names:
-            base = f"{base}-{hashlib.sha1(font_id.encode('utf-8')).hexdigest()[:8]}"
-        seen_names.add(base)
+    # A pack with only space advances mints no strike; emitting a glyphless .ttf would
+    # be dead weight, so skip the file but keep the storage (its rows reach the sidecar).
+    if not storage.sbix_strikes:
+        return None, storage
 
-        output_file = f"{base}.ttf"
-        output_path = f"{output_dir}/{output_file}"
-        log(f"→ ☕ {output_file}...", flush=True)
-        storage.save(output_path)
-        color_files.append((output_path, font_id))
-
-    return color_files, storages
+    output_file = f"{output_font_name}-{COLOR_OUTPUT_INFIX}.ttf"
+    output_path = f"{output_dir}/{output_file}"
+    log(f"→ ☕ {output_file}...", flush=True)
+    storage.save(output_path)
+    return output_path, storage

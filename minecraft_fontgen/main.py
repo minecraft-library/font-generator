@@ -74,16 +74,15 @@ def main():
     # colour is on: the classifier removed raster codepoints from the mono map).
     font_files = create_font_files(glyph_map, opts.use_cff, opts.output_fonts, opts.output_dir, OUTPUT_FONT_NAME, opts.output_ext)
 
-    # Additive colour pass: one sbix TrueType per pack font id plus the shared sidecar.
+    # Additive colour pass: one merged sbix TrueType for the whole pack plus the sidecar.
     if opts.color_glyphs:
         color_glyph_map = build_color_glyph_map(color_providers)
         space_by_font_id = group_color_space_rows(color_providers)
-        color_files, color_storages = create_color_font_files(
+        color_file, color_storage = create_color_font_files(
             color_glyph_map, space_by_font_id, opts.output_dir, OUTPUT_FONT_NAME)
-        if color_storages:
-            fonts = [{"font_id": font_id, "file": os.path.basename(path)}
-                     for path, font_id in color_files]
-            sidecar = build_sidecar(fonts, color_storages, resolve_source_date_epoch())
+        if color_storage is not None:
+            file_ref = os.path.basename(color_file) if color_file else None
+            sidecar = build_sidecar(file_ref, color_storage, resolve_source_date_epoch())
             write_sidecar(sidecar, opts.output_dir)
 
     if opts.validate and font_files:

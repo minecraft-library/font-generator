@@ -19,6 +19,11 @@ class Glyph:
         self.is_raster = tile.get("render_mode") == "raster"
         self.unicode = tile["unicode"]
         self.codepoint = self._get_codepoint() if "codepoint" not in tile else tile["codepoint"]
+        # A raster glyph's cmap entry and glyph name key on the STORED codepoint (the
+        # synthetic plane-15/16 codepoint that lets one merged font carry codepoints
+        # different font ids reuse); self.codepoint stays the ORIGINAL codepoint, which
+        # rides only in the sidecar. Mono glyphs never allocate a stored codepoint.
+        self.stored_codepoint = tile.get("stored_codepoint") if self.is_raster else None
         self.use_cff = use_cff
         self.name = self._get_name()
         self.svg = tile["svg"] if "svg" in tile else None
@@ -79,13 +84,18 @@ class Glyph:
         return get_unicode_codepoint(self.unicode)
 
     def _get_name(self):
-        """Returns the PostScript glyph name (uni0041 for BMP, u010000 for SMP)."""
+        """Returns the PostScript glyph name (uni0041 for BMP, u010000 for SMP).
+
+        Raster glyphs name from their STORED codepoint (always plane 15/16, so the
+        u010000 form), keeping names unique across font ids that reuse an original
+        codepoint. Everything else names from the original codepoint."""
         if self.codepoint == 0x0000:
             return NOTDEF
-        elif self.codepoint <= 0xFFFF:
-            return f"uni{self.codepoint:04X}"
+        cp = self.stored_codepoint if self.stored_codepoint is not None else self.codepoint
+        if cp <= 0xFFFF:
+            return f"uni{cp:04X}"
         else:
-            return f"u{self.codepoint:06X}"
+            return f"u{cp:06X}"
 
     def _new_pen(self):
         """Creates a new fontTools drawing pen (T2CharStringPen for CFF, TTGlyphPen for TrueType)."""

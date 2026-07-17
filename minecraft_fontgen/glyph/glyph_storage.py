@@ -147,7 +147,7 @@ class GlyphStorage:
         name = self.embed_cache.get(dedup_key)
         if name is None:
             name = glyph.name
-            # A codepoint-derived name is unique within one per-font-id file, but
+            # A stored-codepoint-derived name is unique across the whole pack, but
             # never silently overwrite a distinct glyph if one ever collides.
             if name in self.glyphs:
                 base = name
@@ -168,20 +168,26 @@ class GlyphStorage:
             self.raster_x_max = max(self.raster_x_max, x_max)
             self.embed_cache[dedup_key] = name
 
-        if glyph.codepoint != 0x0000:
-            self.cpr[0] = min(self.cpr[0], glyph.codepoint)
-            self.cpr[1] = max(self.cpr[1], glyph.codepoint)
+        # The cmap and OS/2 char-index range key on the STORED codepoint (what the
+        # merged font actually carries); the original codepoint lives only in the
+        # sidecar row so the consumer can bridge pack + original codepoint -> row.
+        stored_cp = glyph.stored_codepoint
+        if stored_cp is not None and stored_cp != 0x0000:
+            self.cpr[0] = min(self.cpr[0], stored_cp)
+            self.cpr[1] = max(self.cpr[1], stored_cp)
 
-        # Many codepoints may point at one (deduped) name.
-        for table in self.tables:
-            if table.format == 4 and glyph.codepoint <= 0xFFFF:
-                table.cmap[glyph.codepoint] = name
-            elif table.format == 12:
-                table.cmap[glyph.codepoint] = name
+        # Many stored codepoints may point at one (deduped) name.
+        if stored_cp is not None:
+            for table in self.tables:
+                if table.format == 4 and stored_cp <= 0xFFFF:
+                    table.cmap[stored_cp] = name
+                elif table.format == 12:
+                    table.cmap[stored_cp] = name
 
         self.sidecar_rows.append({
             "font_id": glyph.font_id,
             "codepoint": glyph.codepoint,
+            "stored_codepoint": stored_cp,
             "glyphName": name,
             "gid": None,
             "advance": advance_signed,
@@ -220,6 +226,7 @@ class GlyphStorage:
         self.sidecar_rows.append({
             "font_id": font_id,
             "codepoint": codepoint,
+            "stored_codepoint": None,
             "glyphName": None,
             "gid": None,
             "advance": advance_signed,

@@ -156,7 +156,15 @@ COLOR_GLYPHS = False  # True enables the additive colour-glyph track
 SBIX_GRAPHIC_TYPE = "png "  # sbix graphicType tag (trailing space is significant)
 SBIX_RESOLUTION = 72  # sbix strike resolution in ppi
 COLOR_SIDECAR_NAME = "colour-glyphs.json"  # shared versioned sidecar filename
-COLOR_OUTPUT_INFIX = "Color"  # infix in per-font-id colour output filenames
+COLOR_OUTPUT_INFIX = "Color"  # infix in the single per-pack colour output filename (Minecraft-Color.ttf)
+# Stored-codepoint plane window. Every (font_id, original_codepoint) raster pair is
+# assigned a synthetic STORED codepoint from this range so a single merged font can
+# carry codepoints that different pack font ids reuse (the classic PUA collision).
+# Allocation is linear from U+F0000 (plane 15, SPUA-A) into plane 16 (SPUA-B),
+# skipping the two noncharacters at the end of each plane. Never BMP PUA - that
+# range is small and already spoken for by the packs' own art.
+STORED_CP_START = 0xF0000  # first stored codepoint (plane 15)
+STORED_CP_END = 0x10FFFF  # last codepoint of plane 16 (the U+xFFFE/F noncharacters are skipped)
 UNITS_PER_PIXEL_BASE = UNITS_PER_EM // DEFAULT_GLYPH_SIZE  # 128 font units per source pixel at the base glyph size
 PPEM_ROUND_EPS = 1e-6  # tolerance before a non-integer strike ppem warns
 COLOR_PNG_COMPRESS_LEVEL = 6  # zlib level for embedded cell PNGs (size only; dedup hashes the pre-encode array)
