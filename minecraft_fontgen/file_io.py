@@ -253,8 +253,13 @@ def parse_json_providers(byte_data, stack=None, layer_name="vanilla"):
 
     return providers
 
-def slice_provider_tiles(providers):
-    """Slices each provider's bitmap PNG into individual glyph tiles with contour and SVG data."""
+def slice_provider_tiles(providers, color_mode=False):
+    """Slices each provider's bitmap PNG into individual glyph tiles with contour and SVG data.
+
+    color_mode=False reproduces the original mono behaviour byte-for-byte. When
+    color_mode=True the debug side-effects (whole-sheet PNG copies and per-tile
+    BMPs) are kept off so the additive colour track never litters the work dir,
+    and the decoded RGBA sheet is available per provider for the raster path."""
     log(f"→ ✂️ Slicing bitmap providers into tiles...")
 
     debug_svg_regular = any(s.get("debug", {}).get("svg") for s in FONT_STYLES if s["pixel_style"] == "Regular")
@@ -263,11 +268,17 @@ def slice_provider_tiles(providers):
     debug_bmp = any(s.get("debug", {}).get("bmp") for s in FONT_STYLES)
 
     for provider in providers:
-        bitmap = binarize_provider_bitmap(provider)
-        if bitmap is None:
+        # One decode per provider serves both the binary crop and (on the colour
+        # path) every RGBA cell crop; the sheet is rebound each iteration so only
+        # one provider's sheet is ever live.
+        rgba_sheet = load_provider_rgba(provider)
+        if rgba_sheet is None:
             log(f" → ⚠️ Skipping '{provider['name']}' (texture missing: {provider['file_path']})")
             provider["tiles"] = []
             continue
+        bitmap = binarize_rgba(rgba_sheet)
+        if not color_mode:
+            _write_provider_debug_images(provider, bitmap)
         tiles = []
 
         # Calculate tile dimensions from the chars grid (the game divides the
@@ -312,7 +323,7 @@ def slice_provider_tiles(providers):
                 tiles.append(tile)
 
                 # Crop tile bitmap from full bitmap
-                tile["bitmap"] = crop_tile(bitmap, tile, save=debug_bmp)
+                tile["bitmap"] = crop_tile(bitmap, tile, save=debug_bmp and not color_mode)
 
                 # Trace contours for regular and bold styles
                 tile["pixels"] = trace_tile_contours(tile)
@@ -334,42 +345,70 @@ def slice_provider_tiles(providers):
     total_tiles = sum(len(p["tiles"]) for p in providers)
     log(f" → 🔢 Sliced {total_tiles} glyphs across {len(providers)} providers...")
 
+def load_provider_rgba(provider):
+    """Decodes a provider's texture to an RGBA image, or None when it is missing.
+
+    This is the single decode that feeds both the binary crop and (on the colour
+    path) every RGBA cell crop for the provider. It writes nothing to disk and is
+    never stored on the provider dict, so the decoded sheet is collectable as soon
+    as the caller drops it."""
+    if not os.path.isfile(provider["file_path"]):
+        return None
+    return Image.open(provider["file_path"]).convert("RGBA")
+
+def binarize_rgba(rgba):
+    """Binarizes an already-decoded RGBA image to black ink on white.
+
+    Coverage follows the game's rule: a pixel is part of the glyph when its
+    alpha exceeds INK_ALPHA_THRESHOLD. Images with no transparency at all fall
+    back to the legacy luminance threshold. This is the exact binarization body
+    that used to live inside binarize_provider_bitmap, operating on the passed
+    image so the decode can be shared with the colour crops."""
+    alpha = rgba.getchannel("A")
+    if alpha.getextrema() == (255, 255):
+        bg = Image.new("RGBA", rgba.size, (0, 0, 0, 255))
+        flat = Image.alpha_composite(bg, rgba).convert("L")
+        flat = Image.eval(flat, lambda x: 255 - x)
+        return flat.point(lambda x: 0 if x < 128 else 255, '1')
+    return alpha.point(lambda a: 0 if a > INK_ALPHA_THRESHOLD else 255, '1')
+
+def _write_provider_debug_images(provider, binary):
+    """Writes the whole-sheet debug copies: the original PNG and the grayscale
+    binarization. Extracted from binarize_provider_bitmap so the colour path can
+    keep these side-effects off while the mono path stays byte-identical."""
+    output_file = provider["output"] + "/" + provider["name"]
+    shutil.copyfile(provider["file_path"], output_file + ".png")
+    binary.save(f"{output_file}_grayscale.png")
+
 def binarize_provider_bitmap(provider):
     """Reads a provider PNG and binarizes it to black ink on white.
 
     Coverage follows the game's rule: a pixel is part of the glyph when its
     alpha exceeds INK_ALPHA_THRESHOLD. Images with no transparency at all fall
     back to the legacy luminance threshold. Returns None when the texture file
-    is missing."""
-    if not os.path.isfile(provider["file_path"]):
+    is missing. Kept as a thin wrapper over the decode/binarize/debug-write split
+    so its signature and side-effects are unchanged for existing callers."""
+    rgba = load_provider_rgba(provider)
+    if rgba is None:
         return None
-    img = Image.open(provider["file_path"]).convert("RGBA")
-
-    alpha = img.getchannel("A")
-    if alpha.getextrema() == (255, 255):
-        bg = Image.new("RGBA", img.size, (0, 0, 0, 255))
-        flat = Image.alpha_composite(bg, img).convert("L")
-        flat = Image.eval(flat, lambda x: 255 - x)
-        binary = flat.point(lambda x: 0 if x < 128 else 255, '1')
-    else:
-        binary = alpha.point(lambda a: 0 if a > INK_ALPHA_THRESHOLD else 255, '1')
-
-    # Copy original and save grayscale
-    output_file = provider["output"] + "/" + provider["name"]
-    shutil.copyfile(provider["file_path"], output_file + ".png")
-    binary.save(f"{output_file}_grayscale.png")
-
+    binary = binarize_rgba(rgba)
+    _write_provider_debug_images(provider, binary)
     return binary
 
-def crop_tile(bitmap, tile, save=True):
-    """Crops a single glyph tile from a full provider bitmap and optionally saves it to disk."""
+def _tile_box(tile):
+    """Returns the (x0, y0, x1, y1) crop rectangle for a tile. Single source of
+    truth shared by crop_tile and crop_tile_rgba so the binary crop and the RGBA
+    crop can never drift."""
     x, y = tile["location"]
     width, height = tile["size"]
     glyph_width = int(width)
     px, py = (x * glyph_width, y * height)
+    return (px, py, px + glyph_width, py + height)
 
+def crop_tile(bitmap, tile, save=True):
+    """Crops a single glyph tile from a full provider bitmap and optionally saves it to disk."""
     bitmap = {
-        "image": bitmap.crop((px, py, px + glyph_width, py + height)),
+        "image": bitmap.crop(_tile_box(tile)),
         "file": f"{tile['output']}/glyph.bmp"
     }
 
@@ -377,6 +416,15 @@ def crop_tile(bitmap, tile, save=True):
         os.makedirs(tile["output"], exist_ok=True)
         bitmap["image"].save(bitmap["file"])
     return bitmap
+
+def crop_tile_rgba(rgba_sheet, tile):
+    """Crops a single glyph tile's RGBA pixels from the decoded provider sheet.
+
+    Shares _tile_box with crop_tile so the colour crop matches the binary crop
+    exactly. Writes nothing to disk and attaches nothing to the tile; the caller
+    consumes it immediately (classify/encode/hash) and drops it so at most one
+    cell's RGBA is ever live."""
+    return rgba_sheet.crop(_tile_box(tile))
 
 def trace_tile_contours(tile):
     """Traces contours from a tile's bitmap for both regular and bold styles."""
