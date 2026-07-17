@@ -73,14 +73,19 @@ def _demo_pack():
     return icons
 
 
-def _decode_strike(font, codepoint):
-    """Returns the decoded RGBA image embedded for a codepoint's glyph, across strikes."""
-    name = font.getBestCmap()[codepoint]
+def _decode_strike(font, name):
+    """Returns the decoded RGBA image embedded for a glyph name, across strikes."""
     for strike in font["sbix"].strikes.values():
         sbix_glyph = strike.glyphs.get(name)
         if sbix_glyph is not None and sbix_glyph.imageData:
             return Image.open(io.BytesIO(sbix_glyph.imageData)).convert("RGBA")
-    raise AssertionError(f"no strike carried an image for U+{codepoint:04X}")
+    raise AssertionError(f"no strike carried an image for glyph '{name}'")
+
+
+def _row_for(storage, codepoint, font_id="sky:icons"):
+    """The single storage's sidecar row for an original (font_id, codepoint) pair."""
+    return next(r for r in storage.sidecar_rows
+                if r["codepoint"] == codepoint and r["font_id"] == font_id)
 
 
 def test_color_end_to_end(monkeypatch):
@@ -109,41 +114,45 @@ def test_color_end_to_end(monkeypatch):
     # the classifier dropped the mono letter; only the two raster cells remain
     assert set(color_map["sky:icons"]) == {CP_ICON, CP_TALL}
 
-    color_files, storages = create_color_font_files(
+    color_file, storage = create_color_font_files(
         color_map, space_by_font_id, "out", OUTPUT_FONT_NAME)
-    assert len(color_files) == 1
-    path, font_id = color_files[0]
-    assert font_id == "sky:icons"
+    assert color_file is not None
+    assert os.path.basename(color_file) == f"{OUTPUT_FONT_NAME}-Color.ttf"
 
-    font = TTFont(path)
+    font = TTFont(color_file)
     assert "sbix" in font
     cmap = font.getBestCmap()
-    assert CP_ICON in cmap and CP_TALL in cmap
+    stored_icon = _row_for(storage, CP_ICON)["stored_codepoint"]
+    stored_tall = _row_for(storage, CP_TALL)["stored_codepoint"]
+    assert stored_icon in cmap and stored_tall in cmap
+    # the merged font's cmap keys on stored codepoints, not the original PUA ones
+    assert CP_ICON not in cmap and CP_TALL not in cmap
     assert CP_LETTER not in cmap  # the mono cell minted no colour glyph
 
     # strikes round-trip pixel-for-pixel against the source cells
     assert np.array_equal(
-        np.array(_decode_strike(font, CP_ICON)),
+        np.array(_decode_strike(font, cmap[stored_icon])),
         np.array(Image.open(io.BytesIO(two_color_block_png(8, 8))).convert("RGBA")))
     assert np.array_equal(
-        np.array(_decode_strike(font, CP_TALL)),
+        np.array(_decode_strike(font, cmap[stored_tall])),
         np.array(Image.open(io.BytesIO(_solid_png(256, (30, 200, 90, 255)))).convert("RGBA")))
 
     # --- sidecar ---
-    fonts = [{"font_id": fid, "file": os.path.basename(p)} for p, fid in color_files]
-    sidecar = build_sidecar(fonts, storages, resolve_source_date_epoch())
+    sidecar = build_sidecar(os.path.basename(color_file), storage, resolve_source_date_epoch())
     write_sidecar(sidecar, "out")
 
+    assert sidecar["file"] == f"{OUTPUT_FONT_NAME}-Color.ttf"
     by_cp = {g["codepoint"]: g for g in sidecar["glyphs"]}
     assert set(by_cp) == {CP_ICON, CP_TALL, CP_SPACE}
     # space row: no glyph, signed advance carried verbatim
     assert by_cp[CP_SPACE]["glyph_name"] is None
     assert by_cp[CP_SPACE]["gid"] is None
+    assert by_cp[CP_SPACE]["stored_codepoint"] is None
     assert by_cp[CP_SPACE]["advance"] == -16384
-    # glyph rows: gid lines up with the compiled glyph order at that codepoint
+    # glyph rows: gid lines up with the compiled glyph order at that stored codepoint
     order = font.getGlyphOrder()
     for cp in (CP_ICON, CP_TALL):
-        assert order[by_cp[cp]["gid"]] == cmap[cp]
+        assert order[by_cp[cp]["gid"]] == cmap[by_cp[cp]["stored_codepoint"]]
 
     # sidecar on disk parses back to the same object
     with open("out/colour-glyphs.json", encoding="utf-8") as f:
@@ -160,10 +169,9 @@ def test_color_end_to_end_deterministic(monkeypatch):
         color_providers = collect_color_providers(stack)
         color_map = build_color_glyph_map(color_providers)
         space = group_color_space_rows(color_providers)
-        files, storages = create_color_font_files(color_map, space, outdir, OUTPUT_FONT_NAME)
-        fonts = [{"font_id": fid, "file": os.path.basename(p)} for p, fid in files]
-        sidecar = build_sidecar(fonts, storages, resolve_source_date_epoch())
-        with open(files[0][0], "rb") as f:
+        color_file, storage = create_color_font_files(color_map, space, outdir, OUTPUT_FONT_NAME)
+        sidecar = build_sidecar(os.path.basename(color_file), storage, resolve_source_date_epoch())
+        with open(color_file, "rb") as f:
             return f.read(), json.dumps(sidecar, ensure_ascii=False, indent=2)
 
     font_a, json_a = _build("a")
@@ -203,8 +211,8 @@ def test_colr_not_emitted(tmp_path):
         make_raster_tile(CP_ICON, Image.open(io.BytesIO(two_color_block_png(8, 8))).convert("RGBA"),
                          8, 7, font_id="sky:icons"),
     ]}])
-    files, _ = create_color_font_files(color_map, {}, str(tmp_path), OUTPUT_FONT_NAME)
-    font = TTFont(files[0][0])
+    color_file, _ = create_color_font_files(color_map, {}, str(tmp_path), OUTPUT_FONT_NAME)
+    font = TTFont(color_file)
     for banned in ("COLR", "CPAL", "CBDT", "CBLC"):
         assert banned not in font
     assert "sbix" in font

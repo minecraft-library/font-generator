@@ -109,8 +109,11 @@ def make_raster_tile(codepoint, cell, display_height, ascent, font_id="test:demo
 
 
 def build_color_font_storage(tiles):
-    """Assembles a single colour TrueType font from raster tile dicts and returns the
-    finalized GlyphStorage (mirrors the per-font-id table set the colour compiler uses)."""
+    """Assembles the single merged colour TrueType font from raster tile dicts and
+    returns the finalized GlyphStorage. Mirrors create_color_font_files: every
+    (font_id, codepoint) pair is assigned a stored codepoint from plane 15/16 before
+    the tile is added, so the storage's cmap keys on stored codepoints exactly as the
+    real single-file compiler does."""
     from fontTools.ttLib import TTFont
 
     from minecraft_fontgen.table.header import create_font_header_table
@@ -123,6 +126,7 @@ def build_color_font_storage(tiles):
     from minecraft_fontgen.table.glyph_mappings import create_font_mapping_table
     from minecraft_fontgen.table.truetype import create_tt_font_tables
     from minecraft_fontgen.glyph.glyph_storage import GlyphStorage
+    from minecraft_fontgen.stored_codepoint import allocate_stored_codepoints
 
     font = TTFont()
     create_font_header_table(font, use_cff=False)
@@ -135,12 +139,36 @@ def build_color_font_storage(tiles):
     create_font_mapping_table(font)
     create_tt_font_tables(font)
 
+    stored_by_pair = allocate_stored_codepoints(
+        (tile["font_id"], tile["codepoint"]) for tile in tiles)
+
     storage = GlyphStorage(font, use_cff=False, color_mode=True)
     for tile in tiles:
+        tile = dict(tile)
+        tile["stored_codepoint"] = stored_by_pair[(tile["font_id"], tile["codepoint"])]
         storage.add(storage.create_glyph(tile))
     storage.add_notdef()
     storage.finalize()
     return storage
+
+
+def stored_cp_for(storage, codepoint, font_id="test:demo"):
+    """Returns the stored codepoint the merged font assigned to an original
+    (font_id, codepoint) raster pair, read back from the storage's sidecar rows."""
+    for row in storage.sidecar_rows:
+        if row["codepoint"] == codepoint and row["font_id"] == font_id:
+            return row["stored_codepoint"]
+    raise KeyError((font_id, codepoint))
+
+
+def glyph_name_for(storage, codepoint, font_id="test:demo"):
+    """Returns the compiled glyph name for an original (font_id, codepoint) raster
+    pair. The merged font's cmap keys on stored codepoints, so tests resolve the
+    strike by name through the sidecar row rather than getBestCmap()[original_cp]."""
+    for row in storage.sidecar_rows:
+        if row["codepoint"] == codepoint and row["font_id"] == font_id:
+            return row["glyphName"]
+    raise KeyError((font_id, codepoint))
 
 
 def compiled_font_bytes(storage):

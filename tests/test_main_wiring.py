@@ -84,9 +84,9 @@ def _stub_pipeline(monkeypatch, calls):
 
     def create_color_font_files(color_glyph_map, space_by_font_id, output_dir, output_font_name):
         calls.append("create_color")
-        return [("out/Minecraft-Color-wy_a.ttf", "wy:a")], [object()]
+        return "out/Minecraft-Color.ttf", object()
 
-    def build_sidecar(fonts, storages, epoch):
+    def build_sidecar(file, storage, epoch):
         calls.append("build_sidecar")
         return {}
 

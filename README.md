@@ -304,9 +304,8 @@ files:
 output/
 ├── Minecraft-Regular.ttf              # the usual mono fonts (unchanged)
 ├── ...
-├── Minecraft-Color-<font_id>.ttf      # one colour font per pack font file
-├── ...
-└── colour-glyphs.json                 # shared sidecar (positioning metadata)
+├── Minecraft-Color.ttf                # one merged colour font for the whole pack
+└── colour-glyphs.json                 # shared sidecar (positioning + codepoint bridge)
 ```
 
 Key points:
@@ -314,20 +313,24 @@ Key points:
 - **Forces TrueType.** The colour art is stored in an [`sbix`](https://learn.microsoft.com/en-us/typography/opentype/spec/sbix)
   table, which rides in a TrueType-flavoured sfnt, so the mode forces `.ttf`
   output. An explicit `--type opentype` is coerced to `.ttf` with a warning.
-- **One file per pack font id.** Packs reuse the same private-use codepoints
-  across different font files with *different* art, which a single codepoint-keyed
-  font physically cannot round-trip. Each pack font file compiles to its own
-  `Minecraft-Color-<font_id>.ttf`, and the sidecar's `(font_id, codepoint)` rows
-  disambiguate across them. Each colour font's glyph set is scoped to just that
-  file's cells, so the files stay small.
+- **One merged file per pack.** Packs reuse the same private-use codepoints across
+  different font files with *different* art, which a single codepoint-keyed font
+  physically cannot round-trip. Instead of splitting into one file per font id,
+  every `(font_id, original_codepoint)` raster pair is assigned a synthetic
+  **stored codepoint** from plane 15/16 (`U+F0000` onward), so all the art coexists
+  in one `Minecraft-Color.ttf`. Identical art across font ids dedups to a single
+  glyph. The sidecar bridges each pack `(font_id, codepoint)` back to the stored
+  codepoint (and the authoritative `gid`). Allocation is deterministic per build,
+  so the same input yields a byte-identical font + sidecar; because the assignment
+  can shift across pack updates, the font and sidecar ship as a matched pair.
 - **Regular only.** Bold smears a bitmap grid and Italic is a vector shear, both
   meaningless on a raster cell, so colour glyphs are emitted in Regular only.
-- **The sidecar carries what the font cannot.** `colour-glyphs.json` is a
-  versioned, `gid`-keyed manifest of every colour glyph's signed (and possibly
-  fractional) advance, origin, strike ppem, and the negative/fractional
-  space-provider advances that a `uint16` `hmtx` cannot hold. See its
-  `schema_version` / field layout in
-  [`colour_sidecar.py`](minecraft_fontgen/colour_sidecar.py).
+- **The sidecar carries what the font cannot.** `colour-glyphs.json` (schema v2) is
+  a versioned manifest of every colour glyph's original codepoint, stored codepoint,
+  `gid`, signed (and possibly fractional) advance, origin, strike ppem, and the
+  negative/fractional space-provider advances that a `uint16` `hmtx` cannot hold,
+  plus the single top-level colour `file` reference. See its `schema_version` /
+  field layout in [`colour_sidecar.py`](minecraft_fontgen/colour_sidecar.py).
 
 > [!IMPORTANT]
 > **The consumer must read the strikes itself.** Java2D/AWT does not render (or

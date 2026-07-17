@@ -12,7 +12,9 @@ from helpers import (
     color_cell,
     compiled_font_bytes,
     flat_two_color_cell,
+    glyph_name_for,
     make_raster_tile,
+    stored_cp_for,
 )
 
 UNITS_PER_EM = 1024
@@ -49,12 +51,15 @@ def test_sbix_roundtrip_pixel_equality():
         make_raster_tile(0xE002, cells[0xE002], 16, 15),
         make_raster_tile(0xE003, cells[0xE003], 256, 240),
     ]
-    font = _reopen(build_color_font_storage(tiles))
+    storage = build_color_font_storage(tiles)
+    stored = {cp: stored_cp_for(storage, cp) for cp in cells}
+    font = _reopen(storage)
     best = font.getBestCmap()
     sbix = font["sbix"]
 
     for cp, source in cells.items():
-        gname = best[cp]
+        # the merged font's cmap keys on the STORED codepoint, not the original
+        gname = best[stored[cp]]
         found = None
         for strike in sbix.strikes.values():
             if gname in strike.glyphs and strike.glyphs[gname].imageData:
@@ -69,8 +74,10 @@ def test_sbix_roundtrip_pixel_equality():
 def test_sbix_256px_pixel_equality():
     source = _big_opaque_cell(256)
     tiles = [make_raster_tile(0xE006, source, 256, 240)]
-    font = _reopen(build_color_font_storage(tiles))
-    gname = font.getBestCmap()[0xE006]
+    storage = build_color_font_storage(tiles)
+    stored_cp = stored_cp_for(storage, 0xE006)
+    font = _reopen(storage)
+    gname = font.getBestCmap()[stored_cp]
     strike = font["sbix"].strikes[8]  # native==display -> ppem 8
     decoded = np.asarray(Image.open(io.BytesIO(strike.glyphs[gname].imageData)).convert("RGBA"))
     assert np.array_equal(decoded, np.asarray(source))
@@ -92,11 +99,10 @@ def test_strike_sharing_by_display_scale():
     # equal display_scale (1.0) cells share the ppem-8 strike despite different pixel sizes
     assert set(strikes.keys()) == {8, 16}
     ppem8_names = set(strikes[8].glyphs.keys())
-    best = storage.font.getBestCmap()
-    assert best[0xE001] in ppem8_names
-    assert best[0xE002] in ppem8_names
+    assert glyph_name_for(storage, 0xE001) in ppem8_names
+    assert glyph_name_for(storage, 0xE002) in ppem8_names
     # the downscaled cell (native taller than display) lands in the LARGER ppem strike
-    assert best[0xE003] in strikes[16].glyphs
+    assert glyph_name_for(storage, 0xE003) in strikes[16].glyphs
 
 
 def test_strike_ppem_noninteger_warns(capsys, monkeypatch):
@@ -169,8 +175,10 @@ def test_maxp_recalc_mixed_glyf_sbix():
 
 def test_empty_glyf_roundtrip():
     tiles = [make_raster_tile(0xE001, flat_two_color_cell(8, 8), 8, 7)]
-    font = _reopen(build_color_font_storage(tiles))
-    gname = font.getBestCmap()[0xE001]
+    storage = build_color_font_storage(tiles)
+    stored_cp = stored_cp_for(storage, 0xE001)
+    font = _reopen(storage)
+    gname = font.getBestCmap()[stored_cp]
     assert font["glyf"][gname].numberOfContours == 0
     assert all(adv >= 0 for adv, _lsb in font["hmtx"].metrics.values())
 
@@ -240,22 +248,26 @@ def test_dedup_shares_gid():
         make_raster_tile(0xE005, flat_two_color_cell(8, 8), 4, 3),  # same pixels, ppem 16
     ]
     storage = build_color_font_storage(tiles)
-    best = storage.font.getBestCmap()
+    name_e001 = glyph_name_for(storage, 0xE001)
+    name_e003 = glyph_name_for(storage, 0xE003)
+    name_e005 = glyph_name_for(storage, 0xE005)
 
-    # identical bitmap + ppem + origin + advance -> one glyph, two cmap entries
-    assert best[0xE001] == best[0xE003]
+    # identical bitmap + ppem + origin + advance -> one glyph, two stored-cp cmap entries
+    assert name_e001 == name_e003
     # differing geometry (ppem) does NOT dedup
-    assert best[0xE005] != best[0xE001]
+    assert name_e005 != name_e001
 
     # one strike entry for the shared glyph, three sidecar rows total
     strike8 = storage.font["sbix"].strikes[8]
-    assert sum(1 for n in strike8.glyphs if n == best[0xE001]) == 1
+    assert sum(1 for n in strike8.glyphs if n == name_e001) == 1
     rows_for = {r["codepoint"]: r for r in storage.sidecar_rows}
     assert rows_for[0xE001]["glyphName"] == rows_for[0xE003]["glyphName"]
+    # dedup shares a gid but each pair keeps its own distinct stored codepoint
+    assert rows_for[0xE001]["stored_codepoint"] != rows_for[0xE003]["stored_codepoint"]
     assert len([r for r in storage.sidecar_rows if r["glyphName"] is not None]) == 3
 
     gid = storage.name_to_gid()
-    assert gid[best[0xE001]] == gid[best[0xE003]]
+    assert gid[name_e001] == gid[name_e003]
 
 
 # ---------------------------------------------------------------------------
@@ -270,15 +282,17 @@ def test_origin_golden_image_freetype(tmp_path):
     source = flat_two_color_cell(8, 8)
     tiles = [make_raster_tile(0xE001, source, display_height, ascent)]
     storage = build_color_font_storage(tiles)
+    stored_cp = stored_cp_for(storage, 0xE001)
 
     font_path = tmp_path / "color.ttf"
     with open(font_path, "wb") as f:
         f.write(compiled_font_bytes(storage))
 
     # FreeType is the golden colour renderer (embedded_color / FT_LOAD_COLOR path):
-    # its rasterization of the strike must be pixel-identical to the source art.
+    # its rasterization of the strike must be pixel-identical to the source art. The
+    # merged font's cmap keys on the stored codepoint, so render that character.
     ft = ImageFont.truetype(str(font_path), 8)
-    mask = ft.getmask(chr(0xE001), mode="RGBA")
+    mask = ft.getmask(chr(stored_cp), mode="RGBA")
     rendered = np.asarray(Image.Image()._new(mask).convert("RGBA"))
     assert (rendered[:, :, 3] > 0).any()
     opaque = rendered[rendered[:, :, 3] == 255]
@@ -288,5 +302,5 @@ def test_origin_golden_image_freetype(tmp_path):
     # the stored int16 originOffsetY matches the pinned formula
     expected_oy = round((ascent - display_height) * native_h / display_height)
     strike = storage.font["sbix"].strikes[8]
-    gname = storage.font.getBestCmap()[0xE001]
+    gname = storage.font.getBestCmap()[stored_cp]
     assert strike.glyphs[gname].originOffsetY == expected_oy

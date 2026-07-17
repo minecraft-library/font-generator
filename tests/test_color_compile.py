@@ -1,14 +1,18 @@
-"""M6: per-font-id colour compilation, glyph-map grouping, and the single-Regular,
-GID-ceiling-scoped emission that never touches the mono four-style fan-out."""
+"""M6: single-file colour compilation. One merged sbix TrueType per pack, stored
+codepoints allocated over the (font_id, original_codepoint) pairs, pack-wide content
+dedup, and the single-Regular emission that never touches the mono four-style
+fan-out."""
 import os
 
 import pytest
 from fontTools.ttLib import TTFont
 
 from helpers import color_cell, flat_two_color_cell, make_raster_tile
-from minecraft_fontgen.config import OUTPUT_FONT_NAME
+from minecraft_fontgen.config import OUTPUT_FONT_NAME, STORED_CP_START
 from minecraft_fontgen.file_io import build_color_glyph_map, group_color_space_rows
 from minecraft_fontgen.font_creator import create_color_font_files
+
+MERGED_NAME = f"{OUTPUT_FONT_NAME}-Color.ttf"
 
 
 @pytest.fixture(autouse=True)
@@ -19,6 +23,10 @@ def _fixed_epoch(monkeypatch):
 def _providers(*tiles):
     """Wraps tiles in a provider dict shaped like slice_provider_tiles emits."""
     return [{"tiles": list(tiles)}]
+
+
+def _rows_by_pair(storage):
+    return {(r["font_id"], r["codepoint"]): r for r in storage.sidecar_rows}
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +87,7 @@ def test_group_color_space_rows():
 
 
 # ---------------------------------------------------------------------------
-# create_color_font_files
+# create_color_font_files (single merged file)
 # ---------------------------------------------------------------------------
 
 def _distinct_cell(seed):
@@ -98,95 +106,134 @@ def _one_font_map(font_id, *codepoints):
 
 
 def test_empty_map_emits_nothing(tmp_path):
-    files, storages = create_color_font_files({}, {}, str(tmp_path), OUTPUT_FONT_NAME)
-    assert files == []
-    assert storages == []
+    color_file, storage = create_color_font_files({}, {}, str(tmp_path), OUTPUT_FONT_NAME)
+    assert color_file is None
+    assert storage is None
     assert os.listdir(tmp_path) == []
 
 
-def test_per_fontid_files_no_collision(tmp_path):
-    # Same PUA codepoint under two font ids with different art -> two files, each
-    # carrying its own glyph; neither overwrites the other.
+def test_single_merged_file_carries_all_font_ids(tmp_path):
+    # Same PUA codepoint under two font ids with DIFFERENT art -> ONE file whose cmap
+    # carries two distinct stored codepoints, one per pair, mapping to two glyphs.
+    art_a = flat_two_color_cell(8, 8, left=(200, 0, 0, 255), right=(0, 0, 200, 255))
+    art_b = flat_two_color_cell(8, 8, left=(0, 200, 0, 255), right=(200, 200, 0, 255))
+    color_map = build_color_glyph_map(_providers(
+        make_raster_tile(0xE000, art_a, 8, 7, font_id="packA:icons"),
+        make_raster_tile(0xE000, art_b, 8, 7, font_id="packB:icons"),
+    ))
+
+    color_file, storage = create_color_font_files(color_map, {}, str(tmp_path), OUTPUT_FONT_NAME)
+
+    assert os.path.basename(color_file) == MERGED_NAME
+    assert [f for f in os.listdir(tmp_path) if f.endswith(".ttf")] == [MERGED_NAME]
+
+    rows = _rows_by_pair(storage)
+    stored_a = rows[("packA:icons", 0xE000)]["stored_codepoint"]
+    stored_b = rows[("packB:icons", 0xE000)]["stored_codepoint"]
+    # the colliding original codepoint got two distinct stored codepoints
+    assert stored_a != stored_b
+    assert stored_a >= STORED_CP_START and stored_b >= STORED_CP_START
+
+    font = TTFont(color_file)
+    assert "sbix" in font
+    cmap = font.getBestCmap()
+    # the merged cmap carries the stored codepoints, not the original PUA one
+    assert stored_a in cmap and stored_b in cmap
+    assert 0xE000 not in cmap
+    # distinct art -> distinct glyphs
+    assert cmap[stored_a] != cmap[stored_b]
+
+
+def test_stored_codepoints_assigned_in_sorted_pair_order(tmp_path):
+    # Deterministic allocation: sort (font_id, codepoint) pairs, assign linearly from
+    # U+F0000. "wy:a" sorts before "wy:b"; within a font id, codepoints ascend.
     color_map = {}
-    color_map.update(_one_font_map("packA:icons", 0xE000))
-    color_map.update(_one_font_map("packB:icons", 0xE000))
+    color_map.update(_one_font_map("wy:b", 0xE000))
+    color_map.update(_one_font_map("wy:a", 0xE001, 0xE000))
 
-    files, storages = create_color_font_files(color_map, {}, str(tmp_path), OUTPUT_FONT_NAME)
+    _, storage = create_color_font_files(color_map, {}, str(tmp_path), OUTPUT_FONT_NAME)
+    rows = _rows_by_pair(storage)
 
-    assert len(files) == 2
-    assert {fid for _, fid in files} == {"packA:icons", "packB:icons"}
-    basenames = {os.path.basename(path) for path, _ in files}
-    assert basenames == {
-        f"{OUTPUT_FONT_NAME}-Color-packA_icons.ttf",
-        f"{OUTPUT_FONT_NAME}-Color-packB_icons.ttf",
-    }
-    for path, _ in files:
-        font = TTFont(path)
-        assert "sbix" in font
-        assert 0xE000 in font.getBestCmap()
-
-
-def test_color_filename_sanitize_collision(tmp_path):
-    # Two distinct font ids that sanitize to the same base get distinct filenames
-    # (the later one gains a short stable sha1 suffix).
-    color_map = {}
-    color_map.update(_one_font_map("wy:icons", 0xE000))
-    color_map.update(_one_font_map("wy/icons", 0xE001))
-
-    files, _ = create_color_font_files(color_map, {}, str(tmp_path), OUTPUT_FONT_NAME)
-    basenames = {os.path.basename(p) for p, _ in files}
-    assert len(basenames) == 2
-    plain = f"{OUTPUT_FONT_NAME}-Color-wy_icons.ttf"
-    assert plain in basenames
-    # the other file keeps the same base plus a short hex suffix before .ttf
-    other = (basenames - {plain}).pop()
-    assert other.startswith(f"{OUTPUT_FONT_NAME}-Color-wy_icons-")
-    assert other.endswith(".ttf")
+    assert rows[("wy:a", 0xE000)]["stored_codepoint"] == STORED_CP_START
+    assert rows[("wy:a", 0xE001)]["stored_codepoint"] == STORED_CP_START + 1
+    assert rows[("wy:b", 0xE000)]["stored_codepoint"] == STORED_CP_START + 2
 
 
 def test_color_mode_regular_only(tmp_path):
-    # One font id yields exactly one file (no bold/italic/alternate fan-out).
+    # One pack yields exactly one file (no bold/italic/alternate fan-out).
     color_map = _one_font_map("wy:a", 0xE000, 0xE001)
-    files, storages = create_color_font_files(color_map, {}, str(tmp_path), OUTPUT_FONT_NAME)
-    assert len(files) == 1
-    assert len(storages) == 1
+    color_file, storage = create_color_font_files(color_map, {}, str(tmp_path), OUTPUT_FONT_NAME)
+    assert color_file is not None
+    assert storage is not None
     ttfs = [f for f in os.listdir(tmp_path) if f.endswith(".ttf")]
-    assert len(ttfs) == 1
+    assert ttfs == [MERGED_NAME]
 
 
 def test_gid_ceiling_scoped(tmp_path):
-    # The glyph set is seeded from this font id's raster tiles + .notdef only:
-    # no vanilla/unifont clone, so numGlyphs stays tiny and far under 65535.
-    color_map = _one_font_map("wy:a", 0xE000, 0xE001, 0xE002)
-    files, storages = create_color_font_files(color_map, {}, str(tmp_path), OUTPUT_FONT_NAME)
-    font = TTFont(files[0][0])
-    # 3 raster glyphs + .notdef
-    assert font["maxp"].numGlyphs == 4
+    # The glyph set is seeded from the packs' raster tiles + .notdef only: no
+    # vanilla/unifont clone, so numGlyphs stays tiny and far under 65535.
+    color_map = {}
+    color_map.update(_one_font_map("wy:a", 0xE000, 0xE001, 0xE002))
+    color_map.update(_one_font_map("wy:b", 0xE009))  # distinct seed -> distinct art
+    color_file, _ = create_color_font_files(color_map, {}, str(tmp_path), OUTPUT_FONT_NAME)
+    font = TTFont(color_file)
+    # 4 distinct raster glyphs + .notdef
+    assert font["maxp"].numGlyphs == 5
     assert font["maxp"].numGlyphs < 65535
 
 
-def test_space_only_font_id_no_file_but_keeps_rows(tmp_path):
-    # A font id with only space advances mints no glyph and no .ttf, but its
-    # storage still carries the sidecar rows so they are not lost.
-    files, storages = create_color_font_files(
+def test_cross_font_id_dedup_shares_one_gid(tmp_path):
+    # Identical art under two different font ids collapses to ONE glyph (pack-wide
+    # dedup), but each pair keeps its own stored codepoint and sidecar row.
+    same = flat_two_color_cell(8, 8)
+    color_map = build_color_glyph_map(_providers(
+        make_raster_tile(0xE000, same, 8, 7, font_id="wy:a"),
+        make_raster_tile(0xE000, flat_two_color_cell(8, 8), 8, 7, font_id="wy:b"),
+    ))
+    color_file, storage = create_color_font_files(color_map, {}, str(tmp_path), OUTPUT_FONT_NAME)
+    rows = _rows_by_pair(storage)
+
+    row_a = rows[("wy:a", 0xE000)]
+    row_b = rows[("wy:b", 0xE000)]
+    assert row_a["glyphName"] == row_b["glyphName"]           # one shared glyph
+    assert row_a["stored_codepoint"] != row_b["stored_codepoint"]  # distinct stored cps
+
+    name_to_gid = storage.name_to_gid()
+    assert name_to_gid[row_a["glyphName"]] == name_to_gid[row_b["glyphName"]]
+
+    font = TTFont(color_file)
+    # 1 shared raster glyph + .notdef
+    assert font["maxp"].numGlyphs == 2
+    cmap = font.getBestCmap()
+    # both stored codepoints resolve to the one shared glyph
+    assert cmap[row_a["stored_codepoint"]] == cmap[row_b["stored_codepoint"]]
+
+
+def test_space_only_pack_no_file_but_keeps_rows(tmp_path):
+    # A pack with only space advances mints no glyph and no .ttf, but its storage
+    # still carries the sidecar rows so they are not lost.
+    color_file, storage = create_color_font_files(
         {}, {"wy:spacing": [(0xE100, -16384)]}, str(tmp_path), OUTPUT_FONT_NAME)
-    assert files == []
-    assert len(storages) == 1
-    rows = storages[0].sidecar_rows
+    assert color_file is None
+    assert storage is not None
+    rows = storage.sidecar_rows
     assert [(r["codepoint"], r["advance"]) for r in rows] == [(0xE100, -16384)]
+    assert rows[0]["stored_codepoint"] is None
     assert [f for f in os.listdir(tmp_path) if f.endswith(".ttf")] == []
 
 
-def test_space_rows_routed_to_matching_font_storage(tmp_path):
-    # Space rows for a font id that also has raster art ride in that font's storage.
+def test_space_rows_ride_in_the_merged_storage(tmp_path):
+    # Space rows ride in the single storage beside the raster art; they mint no glyph.
     color_map = _one_font_map("wy:a", 0xE000)
-    files, storages = create_color_font_files(
+    color_file, storage = create_color_font_files(
         color_map, {"wy:a": [(0xE100, -8.0)]}, str(tmp_path), OUTPUT_FONT_NAME)
-    assert len(files) == 1
-    codepoints = {r["codepoint"] for r in storages[0].sidecar_rows}
+    assert color_file is not None
+    codepoints = {r["codepoint"] for r in storage.sidecar_rows}
     assert {0xE000, 0xE100} <= codepoints
-    # the space codepoint minted no glyph
-    assert 0xE100 not in TTFont(files[0][0]).getBestCmap()
+    # the space row has no stored codepoint and minted no glyph
+    space_row = next(r for r in storage.sidecar_rows if r["codepoint"] == 0xE100)
+    assert space_row["stored_codepoint"] is None
+    assert space_row["glyphName"] is None
 
 
 def test_create_color_font_files_deterministic(tmp_path):
@@ -194,12 +241,13 @@ def test_create_color_font_files_deterministic(tmp_path):
     dir_b = tmp_path / "b"
     dir_a.mkdir()
     dir_b.mkdir()
-    files_a, _ = create_color_font_files(
-        _one_font_map("wy:a", 0xE000, 0xE001), {}, str(dir_a), OUTPUT_FONT_NAME)
-    files_b, _ = create_color_font_files(
-        _one_font_map("wy:a", 0xE000, 0xE001), {}, str(dir_b), OUTPUT_FONT_NAME)
-    with open(files_a[0][0], "rb") as f:
-        bytes_a = f.read()
-    with open(files_b[0][0], "rb") as f:
-        bytes_b = f.read()
-    assert bytes_a == bytes_b
+
+    def _build(outdir):
+        color_map = {}
+        color_map.update(_one_font_map("wy:b", 0xE000))
+        color_map.update(_one_font_map("wy:a", 0xE000, 0xE001))
+        path, _ = create_color_font_files(color_map, {}, str(outdir), OUTPUT_FONT_NAME)
+        with open(path, "rb") as f:
+            return f.read()
+
+    assert _build(dir_a) == _build(dir_b)
