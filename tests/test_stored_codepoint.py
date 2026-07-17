@@ -37,6 +37,33 @@ def test_allocation_flows_into_plane16_and_skips_noncharacters():
     assert 0xFFFE not in values and 0xFFFF not in values
 
 
+def test_allocation_across_full_window_skips_all_four_plane_noncharacters():
+    # Fill the entire plane-15+16 window so the cursor is forced past BOTH plane
+    # ends: U+FFFFE/U+FFFFF (plane 15) and U+10FFFE/U+10FFFF (plane 16). The
+    # 70000-pair test above only crosses into plane 16; this one reaches its end,
+    # which is the only place the last two noncharacters can ever be hit.
+    budget = plane_budget()
+    pairs = [("f", cp) for cp in range(budget)]  # sorted key order == cp ascending
+    assignment = allocate_stored_codepoints(pairs)
+
+    values = list(assignment.values())
+    assert len(values) == budget                      # every pair placed, none dropped
+    assert len(set(values)) == budget                 # and all distinct
+
+    four_noncharacters = {0xFFFFE, 0xFFFFF, 0x10FFFE, 0x10FFFF}
+    assert four_noncharacters.isdisjoint(values)      # none of the four assigned
+    assert min(values) == STORED_CP_START             # starts at U+F0000
+    assert max(values) == 0x10FFFD                     # stops just before U+10FFFE
+
+    # Ordering is deterministic and total: the assigned codepoints, in sorted-key
+    # order, are exactly the window enumerated with the four noncharacters removed,
+    # strictly ascending with no gaps beyond the skips.
+    expected = [cp for cp in range(STORED_CP_START, STORED_CP_END + 1)
+                if cp not in four_noncharacters]
+    assert [assignment[("f", cp)] for cp in range(budget)] == expected
+    assert allocate_stored_codepoints(pairs) == assignment  # stable across runs
+
+
 def test_noncharacter_predicate():
     assert _is_noncharacter(0xFFFE)
     assert _is_noncharacter(0xFFFF)
