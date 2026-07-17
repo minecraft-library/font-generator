@@ -202,6 +202,26 @@ class AssetStack:
                 layers.append((source.name, raw))
         return layers
 
+    def color_font_layers(self):
+        """Enumerates every font file every resource pack ships, for the colour
+        raster track. Yields (pack_name, font_id, raw_json) tuples with pack order
+        preserved, each pack's font ids sorted and deduped, and vanilla excluded
+        (it carries no colour cells). A grammar-invalid font id logs and skips
+        rather than raising, so one malformed name never aborts the enumeration.
+        This is the single seam both zip and dir sources feed."""
+        layers = []
+        for source in self.pack_sources():
+            for font_id in sorted(set(source.list_font_ids())):
+                try:
+                    raw = source.get_font_json(font_id)
+                except ValueError as error:
+                    log(f" → ⚠️ Skipping font '{font_id}' in pack '{source.name}': {error}")
+                    continue
+                if raw is None:
+                    continue
+                layers.append((source.name, font_id, raw))
+        return layers
+
     def materialize_texture(self, ref):
         """Resolves a texture ref through the stack and writes it to a colon-free path.
 

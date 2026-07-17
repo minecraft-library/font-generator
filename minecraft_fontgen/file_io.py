@@ -81,11 +81,35 @@ def collect_pack_providers(stack):
     if providers:
         slice_provider_tiles(providers)
 
-    for source in stack.pack_sources():
-        for font_id in source.list_font_ids():
-            if font_id not in PACK_FONT_IDS and font_id not in ALT_FONT_IDS:
-                log(f"→ ⚠️ Pack '{source.name}' defines font '{font_id}', which this tool does not build")
+    # In colour mode these font ids are ingested by collect_color_providers, so
+    # only warn about them on the mono-only path.
+    if not config.COLOR_GLYPHS:
+        for source in stack.pack_sources():
+            for font_id in source.list_font_ids():
+                if font_id not in PACK_FONT_IDS and font_id not in ALT_FONT_IDS:
+                    log(f"→ ⚠️ Pack '{source.name}' defines font '{font_id}', which this tool does not build")
 
+    return providers
+
+def collect_color_providers(stack):
+    """Parses and slices every pack font file's colour cells, tagged with font_id,
+    plus the space records that carry negative/fractional advances.
+
+    Returns [] immediately when the colour track is disabled. Otherwise it walks
+    every font id in every pack (the classifier drops the mono cells, so parsing
+    the default-font ids too is cheap and never misses colour art embedded there),
+    stamps each provider with its font_id, and slices only the bitmap providers;
+    the space records carry no texture and bypass slicing. Malformed font JSON is
+    skipped per font id rather than aborting the whole colour pass."""
+    if not config.COLOR_GLYPHS:
+        return []
+    providers = []
+    for pack_name, font_id, raw in stack.color_font_layers():
+        try:
+            providers += parse_json_providers(raw, stack, layer_name=pack_name, font_id=font_id, color_mode=True)
+        except (ValueError, AttributeError) as error:
+            log(f" → ⚠️ Skipping malformed font JSON '{font_id}' in pack '{pack_name}': {error}")
+    slice_provider_tiles([p for p in providers if p.get("type") != "space"], color_mode=True)
     return providers
 
 def parse_bin_providers(byte_data):
@@ -178,11 +202,18 @@ def parse_bin_providers(byte_data):
 
     return providers
 
-def parse_json_providers(byte_data, stack=None, layer_name="vanilla"):
+def parse_json_providers(byte_data, stack=None, layer_name="vanilla", font_id=None, color_mode=False):
     """Parses the JSON font provider format into a list of provider dicts.
 
     Texture references resolve through the asset stack, so resource packs can
-    override vanilla textures and reference their own namespaces."""
+    override vanilla textures and reference their own namespaces.
+
+    color_mode=False is behaviourally identical to the mono path: only bitmap
+    providers are kept and every other type is warn-skipped. color_mode=True
+    also captures space providers (their signed/fractional advances feed the
+    colour sidecar) and logs the remaining non-bitmap types by name. Every
+    emitted provider is stamped with font_id (None on the mono path), so a tile
+    can always be traced back to the pack font file it came from."""
     if stack is None:
         stack = AssetStack([VanillaSource()])
     raw_text = byte_data.decode("utf-8", errors="surrogatepass").lstrip("\ufeff")
@@ -193,7 +224,19 @@ def parse_json_providers(byte_data, stack=None, layer_name="vanilla"):
     for index, provider in enumerate(data.get("providers", [])):
         provider_type = provider.get("type")
         if provider_type != "bitmap":
-            log(f" → ⚠️ Skipping unsupported '{provider_type}' provider in {layer_name} (only bitmap providers are converted)")
+            if not color_mode:
+                log(f" → ⚠️ Skipping unsupported '{provider_type}' provider in {layer_name} (only bitmap providers are converted)")
+                continue
+            if provider_type == "space":
+                space = parse_space_provider(provider, layer_name, font_id)
+                if space is not None:
+                    providers.append(space)
+            elif provider_type == "reference":
+                log(f" → ℹ️ Reference provider {index} in {layer_name} points at a font ingested independently; not following")
+            elif provider_type in ("ttf", "legacy_unicode", "unihex"):
+                log(f" → ⚠️ Skipping '{provider_type}' provider {index} in {layer_name} (outside the raster colour track)")
+            else:
+                log(f" → ⚠️ Skipping unsupported '{provider_type}' provider in {layer_name} (only bitmap providers are converted)")
             continue
 
         rows = provider.get("chars", [])
@@ -252,10 +295,37 @@ def parse_json_providers(byte_data, stack=None, layer_name="vanilla"):
             "name": name,
             "output": output,
             "layer": layer_name,
+            "font_id": font_id,
             "tiles": []
         })
 
     return providers
+
+def parse_space_provider(provider, layer_name, font_id):
+    """Captures a space provider's advances as sidecar rows.
+
+    Space codepoints mint no glyph (uint16 hmtx cannot even hold their negative
+    values); their advances are the sole carrier of the pack's negative and
+    fractional spacing to the colour sidecar. Each advance is kept verbatim,
+    preserving int-vs-float type and sign with no rounding or abs. Booleans are
+    dropped explicitly (bool is an int subclass that would otherwise slip in as
+    an advance of 1 or 0), as are non-numeric values and codepoints that fail to
+    resolve or are the null glyph. Returns the space record, or None when nothing
+    survives."""
+    advances = provider.get("advances")
+    if not isinstance(advances, dict) or not advances:
+        return None
+    rows = []
+    for char, value in advances.items():
+        codepoint = get_unicode_codepoint(char)
+        if codepoint is None or codepoint == 0x0000:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        rows.append((codepoint, value))
+    if not rows:
+        return None
+    return {"type": "space", "font_id": font_id, "layer": layer_name, "advances": rows}
 
 def slice_provider_tiles(providers, color_mode=False):
     """Slices each provider's bitmap PNG into individual glyph tiles with contour and SVG data.
@@ -268,10 +338,16 @@ def slice_provider_tiles(providers, color_mode=False):
 
     debug_svg_regular = any(s.get("debug", {}).get("svg") for s in FONT_STYLES if s["pixel_style"] == "Regular")
     debug_svg_bold = any(s.get("debug", {}).get("svg") for s in FONT_STYLES if s["pixel_style"] == "Bold")
-    debug_svg = debug_svg_regular or debug_svg_bold
+    # The colour path keeps every debug writer off regardless of FONT_STYLES flags
+    # (the per-tile BMP is gated at its crop_tile call site below).
+    debug_svg = (debug_svg_regular or debug_svg_bold) and not color_mode
     debug_bmp = any(s.get("debug", {}).get("bmp") for s in FONT_STYLES)
 
     for provider in providers:
+        # Space records carry no texture; their advances were captured at parse
+        # time and go straight to the sidecar, so there is nothing to slice.
+        if provider.get("type") == "space":
+            continue
         # One decode per provider serves both the binary crop and (on the colour
         # path) every RGBA cell crop; the sheet is rebound each iteration so only
         # one provider's sheet is ever live.
@@ -321,6 +397,7 @@ def slice_provider_tiles(providers, color_mode=False):
                     "display_height": provider["height"],
                     "ascent": provider.get("ascent", 0),
                     "layer": provider.get("layer", "vanilla"),
+                    "font_id": provider.get("font_id"),
                     "location": (tile_column, tile_row),
                     "output": f"{provider['output']}/tiles/{tile_row:02}_{tile_column:02}_{codepoint:04X}"
                 }
@@ -1109,6 +1186,7 @@ def build_glyph_map(providers, unifont_glyphs, stack=None, inset_vertices=True):
                     "display_height": tile.get("display_height"),
                     "ascent": tile["ascent"],
                     "layer": tile.get("layer", "vanilla"),
+                    "font_id": tile.get("font_id"),
                     "pixels": tile["pixels"][style],
                     "svg": tile["svg"].get(style) if tile.get("svg") else None,
                     "source": "provider"
