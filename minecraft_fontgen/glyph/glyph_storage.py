@@ -20,12 +20,17 @@ def _clamp(value, low, high):
 class GlyphStorage:
     """Accumulates drawn glyphs, manages cmap entries, and writes final font data."""
 
-    def __init__(self, font, use_cff: bool = True, color_mode: bool = False):
-        """Initializes storage bound to a TTFont, extracting CFF or glyf table references."""
+    def __init__(self, font, use_cff: bool = True, color_mode: bool = False, pack_id=None):
+        """Initializes storage bound to a TTFont, extracting CFF or glyf table references.
+
+        pack_id records the identity of the source this font was built from (the vanilla
+        id for the mono styles, the pack's id for a colour font); it does not affect the
+        compiled bytes."""
         self.font = font
         self.tables = font["cmap"].tables
         self.use_cff = use_cff
         self.color_mode = color_mode
+        self.pack_id = pack_id
         self.glyphs = OrderedDict()
         self.cpr = [0xFFFFFF, 0]
         self.hmtx = {}
@@ -53,6 +58,15 @@ class GlyphStorage:
     def create_glyph(self, tile):
         """Creates a new Glyph instance from tile data using this storage's font format."""
         return Glyph(tile, self.use_cff)
+
+    def _map_codepoint(self, codepoint, name):
+        """Maps a codepoint to a glyph name in every applicable cmap subtable (format 4
+        for the BMP, format 12 for the SMP). Shared by the mono and raster add paths."""
+        for table in self.tables:
+            if table.format == 4 and codepoint <= 0xFFFF:  # BMP (U+0000 - U+FFFF)
+                table.cmap[codepoint] = name
+            elif table.format == 12:  # SMP (U+10000 - U+10FFFF)
+                table.cmap[codepoint] = name
 
     def add(self, glyph: Glyph):
         """Adds a drawn glyph to storage with its advance width, LSB, and cmap mappings."""
@@ -100,11 +114,7 @@ class GlyphStorage:
             self.cpr[1] = max(self.cpr[1], glyph.codepoint)
 
         # Add to glyph mapping
-        for table in self.tables:
-            if table.format == 4 and glyph.codepoint <= 0xFFFF: # BMP (U+0000 - U+FFFF)
-                table.cmap[glyph.codepoint] = name
-            elif table.format == 12: # SMP (U+10000 - U+1FFFF)
-                table.cmap[glyph.codepoint] = name
+        self._map_codepoint(glyph.codepoint, name)
 
     def _add_raster(self, glyph: Glyph):
         """Adds a colour (raster) glyph: an empty glyf outline plus an sbix strike
@@ -174,21 +184,25 @@ class GlyphStorage:
 
         # Many stored codepoints may point at one (deduped) name.
         if stored_cp is not None:
-            for table in self.tables:
-                if table.format == 4 and stored_cp <= 0xFFFF:
-                    table.cmap[stored_cp] = name
-                elif table.format == 12:
-                    table.cmap[stored_cp] = name
+            self._map_codepoint(stored_cp, name)
 
+        self._append_sidecar_row(glyph.font_id, glyph.codepoint, stored_cp, name,
+                                 advance_signed, origin_units, ppem)
+
+    def _append_sidecar_row(self, font_id, codepoint, stored_codepoint, glyph_name,
+                            advance, origin_units, strike_ppem):
+        """Appends one JSON-sidecar row. gid is resolved later against the compiled
+        glyph order (see colour_sidecar.build_sidecar). Shared by the raster-glyph and
+        the space-row paths so their row shape can never drift."""
         self.sidecar_rows.append({
-            "font_id": glyph.font_id,
-            "codepoint": glyph.codepoint,
-            "stored_codepoint": stored_cp,
-            "glyphName": name,
+            "font_id": font_id,
+            "codepoint": codepoint,
+            "stored_codepoint": stored_codepoint,
+            "glyphName": glyph_name,
             "gid": None,
-            "advance": advance_signed,
+            "advance": advance,
             "origin_units": list(origin_units),
-            "strike_ppem": ppem,
+            "strike_ppem": strike_ppem,
         })
 
     def _strike_ppem(self, native_h, display_height, glyph):
@@ -219,16 +233,7 @@ class GlyphStorage:
         """Appends a sidecar-only row for a space-provider advance: no glyph is minted
         (no cmap / hmtx / glyf / strike). The signed, possibly fractional advance is
         the sole carrier of negative/fractional spacing to the consumer."""
-        self.sidecar_rows.append({
-            "font_id": font_id,
-            "codepoint": codepoint,
-            "stored_codepoint": None,
-            "glyphName": None,
-            "gid": None,
-            "advance": advance_signed,
-            "origin_units": [0, 0],
-            "strike_ppem": None,
-        })
+        self._append_sidecar_row(font_id, codepoint, None, None, advance_signed, (0, 0), None)
 
     def name_to_gid(self):
         """Maps each glyph name to its gid in the compiled glyph order. The sidecar
