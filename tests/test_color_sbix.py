@@ -1,0 +1,306 @@
+"""M4: sbix dual-path assembly - empty-glyf raster glyphs, strike-per-display-scale,
+origin offsets, the maxp.recalc-then-resynthesize bbox order, and content-hash dedup."""
+import io
+
+import numpy as np
+import pytest
+from fontTools.ttLib import TTFont
+from PIL import Image, features
+
+from helpers import (
+    build_color_font_storage,
+    color_cell,
+    compiled_font_bytes,
+    flat_two_color_cell,
+    glyph_name_for,
+    make_raster_tile,
+    stored_cp_for,
+)
+
+UNITS_PER_EM = 1024
+UNITS_PER_PIXEL_BASE = 128
+
+
+def _reopen(storage):
+    return TTFont(io.BytesIO(compiled_font_bytes(storage)))
+
+
+def _big_opaque_cell(size=256):
+    """A fully-opaque 256x256 art cell (varied colours, no transparency)."""
+    a = np.zeros((size, size, 4), np.uint8)
+    yy, xx = np.mgrid[0:size, 0:size]
+    a[..., 0] = (xx & 0xFF)
+    a[..., 1] = (yy & 0xFF)
+    a[..., 2] = ((xx ^ yy) & 0xFF)
+    a[..., 3] = 255
+    return Image.fromarray(a, "RGBA")
+
+
+# ---------------------------------------------------------------------------
+# strike round-trip / pixel equality
+# ---------------------------------------------------------------------------
+
+def test_sbix_roundtrip_pixel_equality():
+    cells = {
+        0xE001: flat_two_color_cell(8, 8),
+        0xE002: flat_two_color_cell(16, 16),
+        0xE003: _big_opaque_cell(256),
+    }
+    tiles = [
+        make_raster_tile(0xE001, cells[0xE001], 8, 7),
+        make_raster_tile(0xE002, cells[0xE002], 16, 15),
+        make_raster_tile(0xE003, cells[0xE003], 256, 240),
+    ]
+    storage = build_color_font_storage(tiles)
+    stored = {cp: stored_cp_for(storage, cp) for cp in cells}
+    font = _reopen(storage)
+    best = font.getBestCmap()
+    sbix = font["sbix"]
+
+    for cp, source in cells.items():
+        # the merged font's cmap keys on the STORED codepoint, not the original
+        gname = best[stored[cp]]
+        found = None
+        for strike in sbix.strikes.values():
+            if gname in strike.glyphs and strike.glyphs[gname].imageData:
+                found = strike.glyphs[gname]
+                break
+        assert found is not None, f"no strike image for U+{cp:04X}"
+        decoded = np.asarray(Image.open(io.BytesIO(found.imageData)).convert("RGBA"))
+        assert decoded.shape == np.asarray(source).shape
+        assert np.array_equal(decoded, np.asarray(source)), f"U+{cp:04X} not pixel-equal"
+
+
+def test_sbix_256px_pixel_equality():
+    source = _big_opaque_cell(256)
+    tiles = [make_raster_tile(0xE006, source, 256, 240)]
+    storage = build_color_font_storage(tiles)
+    stored_cp = stored_cp_for(storage, 0xE006)
+    font = _reopen(storage)
+    gname = font.getBestCmap()[stored_cp]
+    strike = font["sbix"].strikes[8]  # native==display -> ppem 8
+    decoded = np.asarray(Image.open(io.BytesIO(strike.glyphs[gname].imageData)).convert("RGBA"))
+    assert np.array_equal(decoded, np.asarray(source))
+
+
+# ---------------------------------------------------------------------------
+# strike sharing by display scale
+# ---------------------------------------------------------------------------
+
+def test_strike_sharing_by_display_scale():
+    tiles = [
+        make_raster_tile(0xE001, flat_two_color_cell(8, 8), 8, 7),     # scale 1.0 -> ppem 8
+        make_raster_tile(0xE002, flat_two_color_cell(16, 16), 16, 15),  # scale 1.0 -> ppem 8
+        make_raster_tile(0xE003, flat_two_color_cell(16, 16), 8, 7),    # scale 0.5 -> ppem 16
+    ]
+    storage = build_color_font_storage(tiles)
+    strikes = storage.font["sbix"].strikes
+
+    # equal display_scale (1.0) cells share the ppem-8 strike despite different pixel sizes
+    assert set(strikes.keys()) == {8, 16}
+    ppem8_names = set(strikes[8].glyphs.keys())
+    assert glyph_name_for(storage, 0xE001) in ppem8_names
+    assert glyph_name_for(storage, 0xE002) in ppem8_names
+    # the downscaled cell (native taller than display) lands in the LARGER ppem strike
+    assert glyph_name_for(storage, 0xE003) in strikes[16].glyphs
+
+
+def test_strike_ppem_noninteger_warns(capsys, monkeypatch):
+    import minecraft_fontgen.config as config
+    monkeypatch.setattr(config, "SILENT_LOG", False)
+    # 8 * native_h / display_height = 8 * 8 / 3 = 21.33 -> non-integer, warns
+    tiles = [make_raster_tile(0xE001, flat_two_color_cell(8, 8), 3, 2)]
+    build_color_font_storage(tiles)
+    out = capsys.readouterr().out
+    assert "Non-integer strike ppem" in out
+    assert "U+E001" in out
+
+
+# ---------------------------------------------------------------------------
+# bbox synthesis after maxp.recalc
+# ---------------------------------------------------------------------------
+
+def test_bbox_covers_tall_256px_art():
+    tiles = [make_raster_tile(0xE006, _big_opaque_cell(256), 256, 240)]
+    storage = build_color_font_storage(tiles)
+    # ascent 240 px * 128 units/px = 30720; bbox must enclose it AFTER maxp.recalc,
+    # which had set head.yMax from the (empty) contours only.
+    expected_top = 240 * UNITS_PER_PIXEL_BASE
+    assert storage.font["head"].yMax >= expected_top
+    assert storage.font["OS/2"].usWinAscent >= expected_top
+
+    reopened = _reopen(storage)  # save() with recalcBBoxes=False preserves it
+    assert reopened["head"].yMax >= expected_top
+
+
+def test_bbox_clamped_for_oversized_display():
+    # A large display height (512) with a small ascent pushes the descent extent
+    # past the int16 head range, and a wide cell pushes the mean advance past the
+    # int16 xAvgCharWidth range. Both must clamp so save() does not raise (real HD
+    # packs ship such cells).
+    cell = _big_opaque_cell(512).crop((0, 0, 600, 512))  # 600 wide x 512 tall, opaque
+    storage = build_color_font_storage([make_raster_tile(0xE00A, cell, 512, 8)])
+    head = storage.font["head"]
+    os2 = storage.font["OS/2"]
+    # descent extent (8 - 512) * 128 = -64512 saturates to the int16 floor
+    assert head.yMin == -0x8000
+    assert -0x8000 <= head.yMax <= 0x7FFF
+    assert -0x8000 <= head.xMax <= 0x7FFF
+    assert -0x8000 <= os2.xAvgCharWidth <= 0x7FFF
+    assert 0 <= os2.usWinAscent <= 0xFFFF
+    assert 0 <= os2.usWinDescent <= 0xFFFF
+    # the whole font still saves and reopens (the failure mode was a save crash)
+    reopened = _reopen(storage)
+    assert reopened["head"].yMin == -0x8000
+
+
+def test_maxp_recalc_mixed_glyf_sbix():
+    tiles = [
+        make_raster_tile(0xE001, flat_two_color_cell(8, 8), 8, 7),
+        make_raster_tile(0xE006, _big_opaque_cell(256), 256, 240),
+    ]
+    storage = build_color_font_storage(tiles)
+    font = storage.font
+    # .notdef (contours) + two raster glyphs + is there a glyph count match?
+    assert font["maxp"].numGlyphs == len(font.getGlyphOrder())
+    # the only contour-bearing glyph is .notdef, so maxp reflects its contours
+    assert font["maxp"].maxContours >= 1
+    reopened = _reopen(storage)
+    assert reopened["maxp"].numGlyphs == font["maxp"].numGlyphs
+
+
+# ---------------------------------------------------------------------------
+# empty glyf + hmtx clamp
+# ---------------------------------------------------------------------------
+
+def test_empty_glyf_roundtrip():
+    tiles = [make_raster_tile(0xE001, flat_two_color_cell(8, 8), 8, 7)]
+    storage = build_color_font_storage(tiles)
+    stored_cp = stored_cp_for(storage, 0xE001)
+    font = _reopen(storage)
+    gname = font.getBestCmap()[stored_cp]
+    assert font["glyf"][gname].numberOfContours == 0
+    assert all(adv >= 0 for adv, _lsb in font["hmtx"].metrics.values())
+
+
+def test_hmtx_clamp_vs_sidecar_signed():
+    # A very wide short cell: advance = native_w * (1024 / native_h) overflows uint16.
+    # native_w=520, native_h=8 -> 520 * 128 = 66560 > 65535.
+    wide = flat_two_color_cell(520, 8)
+    tiles = [make_raster_tile(0xE001, wide, 8, 7)]
+    storage = build_color_font_storage(tiles)
+    gname = storage.font.getGlyphOrder()[storage.name_to_gid()[storage.sidecar_rows[0]["glyphName"]]]
+
+    advance_signed = int(round(520 * (UNITS_PER_EM / 8)))
+    assert advance_signed == 66560
+    hmtx_adv = storage.font["hmtx"].metrics[gname][0]
+    assert hmtx_adv == 0xFFFF  # clamped
+    row = storage.sidecar_rows[0]
+    assert row["advance"] == advance_signed  # true value survives in the sidecar
+
+
+# ---------------------------------------------------------------------------
+# advance / x-extent track the cell's display height (not a fixed 8px)
+# ---------------------------------------------------------------------------
+
+def test_raster_advance_tracks_display_height():
+    # A 32x32 cell shown at display height 32 (scale 1.0, but NOT the 8px base):
+    # its advance must be the full display footprint native_w * 128, which equals
+    # its vertical extent display_height * 128. The old formula used
+    # UNITS_PER_EM / native_h and silently assumed an 8px display, under-advancing
+    # by 8/display_height (here 4x: 1024 instead of 4096).
+    storage = build_color_font_storage([make_raster_tile(0xE020, flat_two_color_cell(32, 32), 32, 31)])
+    row = storage.sidecar_rows[0]
+    assert row["codepoint"] == 0xE020
+    expected = 32 * UNITS_PER_PIXEL_BASE          # native_w * 128 = 4096
+    vertical_extent = 32 * UNITS_PER_PIXEL_BASE   # display_height * 128 = 4096
+    assert row["advance"] == expected == vertical_extent
+    # regression guard against the display_height==8 assumption (would give 1024)
+    assert row["advance"] != int(round(32 * (UNITS_PER_EM / 32)))
+
+    gname = storage.font.getGlyphOrder()[storage.name_to_gid()[row["glyphName"]]]
+    assert storage.font["hmtx"].metrics[gname][0] == expected  # fits uint16, unclamped
+    # the advisory head bbox now encloses the true footprint (was under-synthesized)
+    assert storage.font["head"].xMax >= expected
+
+
+def test_raster_advance_display_scale_differs_from_native():
+    # display_height (32) != native_h (16) != 8: exercises the full display-scale
+    # factor 128 * display_height / native_h rather than a coincidental match.
+    storage = build_color_font_storage([make_raster_tile(0xE021, flat_two_color_cell(16, 16), 32, 15)])
+    row = storage.sidecar_rows[0]
+    upp = UNITS_PER_PIXEL_BASE * 32 / 16          # 256 units per native pixel
+    assert row["advance"] == int(round(16 * upp))  # 4096, the display footprint
+    # ppem follows 8 * native_h / display_height = 8 * 16 / 32 = 4
+    assert row["strike_ppem"] == 4
+
+
+# ---------------------------------------------------------------------------
+# content-hash dedup
+# ---------------------------------------------------------------------------
+
+def test_dedup_shares_gid():
+    same = flat_two_color_cell(8, 8)
+    same_again = flat_two_color_cell(8, 8)
+    tiles = [
+        make_raster_tile(0xE001, same, 8, 7),        # ppem 8
+        make_raster_tile(0xE003, same_again, 8, 7),  # identical pixels+geometry+advance
+        make_raster_tile(0xE005, flat_two_color_cell(8, 8), 4, 3),  # same pixels, ppem 16
+    ]
+    storage = build_color_font_storage(tiles)
+    name_e001 = glyph_name_for(storage, 0xE001)
+    name_e003 = glyph_name_for(storage, 0xE003)
+    name_e005 = glyph_name_for(storage, 0xE005)
+
+    # identical bitmap + ppem + origin + advance -> one glyph, two stored-cp cmap entries
+    assert name_e001 == name_e003
+    # differing geometry (ppem) does NOT dedup
+    assert name_e005 != name_e001
+
+    # one strike entry for the shared glyph, three sidecar rows total
+    strike8 = storage.font["sbix"].strikes[8]
+    assert sum(1 for n in strike8.glyphs if n == name_e001) == 1
+    rows_for = {r["codepoint"]: r for r in storage.sidecar_rows}
+    assert rows_for[0xE001]["glyphName"] == rows_for[0xE003]["glyphName"]
+    # dedup shares a gid but each pair keeps its own distinct stored codepoint
+    assert rows_for[0xE001]["stored_codepoint"] != rows_for[0xE003]["stored_codepoint"]
+    assert len([r for r in storage.sidecar_rows if r["glyphName"] is not None]) == 3
+
+    gid = storage.name_to_gid()
+    assert gid[name_e001] == gid[name_e003]
+
+
+# ---------------------------------------------------------------------------
+# FreeType golden render (pins the sbix originOffsetY sign/unit)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not features.check("freetype2"), reason="FreeType not available in Pillow")
+def test_origin_golden_image_freetype(tmp_path):
+    from PIL import ImageFont
+
+    ascent, display_height, native_h = 7, 8, 8
+    source = flat_two_color_cell(8, 8)
+    tiles = [make_raster_tile(0xE001, source, display_height, ascent)]
+    storage = build_color_font_storage(tiles)
+    stored_cp = stored_cp_for(storage, 0xE001)
+
+    font_path = tmp_path / "color.ttf"
+    with open(font_path, "wb") as f:
+        f.write(compiled_font_bytes(storage))
+
+    # FreeType is the golden colour renderer (embedded_color / FT_LOAD_COLOR path):
+    # its rasterization of the strike must be pixel-identical to the source art. The
+    # merged font's cmap keys on the stored codepoint, so render that character.
+    ft = ImageFont.truetype(str(font_path), 8)
+    mask = ft.getmask(chr(stored_cp), mode="RGBA")
+    rendered = np.asarray(Image.Image()._new(mask).convert("RGBA"))
+    assert (rendered[:, :, 3] > 0).any()
+    opaque = rendered[rendered[:, :, 3] == 255]
+    colours = set(map(tuple, opaque[:, :3].tolist()))
+    assert (220, 40, 40) in colours and (40, 60, 220) in colours
+
+    # the stored int16 originOffsetY matches the pinned formula
+    expected_oy = round((ascent - display_height) * native_h / display_height)
+    strike = storage.font["sbix"].strikes[8]
+    gname = storage.font.getBestCmap()[stored_cp]
+    assert strike.glyphs[gname].originOffsetY == expected_oy

@@ -15,6 +15,7 @@ Convert Minecraft's bitmap font glyphs into fully functional OpenType (`.otf`) o
   - [IntelliJ IDEA](#intellij-idea)
   - [Configuration](#configuration)
 - [Output](#output)
+- [Colour glyphs (sbix)](#colour-glyphs-sbix)
 - [Unicode Coverage](#unicode-coverage)
 - [Docker Compose](#docker-compose)
   - [Basic One-Shot Task](#basic-one-shot-task)
@@ -164,6 +165,7 @@ CLI argument  >  Shell environment variable  >  .env file  >  config.py defaults
 | `--validate` | `MCFONT_VALIDATE` | Run FontForge validation after build (requires `fontforge`) | Disabled | `true` |
 | `--resource-pack` | `MCFONT_RESOURCE_PACKS` | Resource pack zip/directory to merge (repeatable; env var is `os.pathsep`-separated) | None | `packs/sb.zip` |
 | `--no-vertex-inset` | `MCFONT_NO_VERTEX_INSET` | Disable the 1-unit inset of vertices shared between contours (see note below) | Inset enabled | `true` |
+| `--color-glyphs` | `MCFONT_COLOR_GLYPHS` | Additionally emit colour (sbix) fonts + a sidecar; forces `.ttf` output (see [Colour glyphs](#colour-glyphs-sbix)) | Disabled | `true` |
 
 Boolean flags accept `1`, `true`, or `yes`. Valid styles: `regular`, `bold`,
 `italic`, `bolditalic`, `galactic`, `illageralt`.
@@ -216,6 +218,7 @@ MCFONT_TYPE=opentype
 MCFONT_SILENT=false
 MCFONT_VALIDATE=false
 MCFONT_NO_VERTEX_INSET=false
+MCFONT_COLOR_GLYPHS=false
 ```
 
 Values from `.env` will **not** overwrite variables that already exist in your
@@ -282,6 +285,76 @@ output/
 The file extension is `.otf` for OpenType (CFF) or `.ttf` for TrueType,
 controlled by `--type` / `MCFONT_TYPE` (or the `OPENTYPE` constant in
 [`config.py`](minecraft_fontgen/config.py)).
+
+## Colour glyphs (sbix)
+
+Some resource packs ship full-colour bitmap art (HUD icons, gemstones, emblems)
+in their font textures. The mono pipeline binarizes that colour away. Passing
+`--color-glyphs` (or `MCFONT_COLOR_GLYPHS=1`) turns on a second, **additive**
+track that preserves the colour cells losslessly:
+
+```bash
+python -m minecraft_fontgen --version latest --resource-pack pack.zip --color-glyphs
+```
+
+The mono fonts are still emitted exactly as before — the colour track only adds
+files:
+
+```
+output/
+├── Minecraft-Regular.ttf                    # the usual mono fonts (unchanged)
+├── ...
+├── Minecraft-Aurora.ttf                     # one merged colour font per source pack
+├── Minecraft-Aurora.colour-glyphs.json      # that pack's sidecar (positioning + codepoint bridge)
+├── Minecraft-Seaside.ttf                    # ...one per additional pack
+└── Minecraft-Seaside.colour-glyphs.json
+```
+
+Key points:
+
+- **Forces TrueType.** The colour art is stored in an [`sbix`](https://learn.microsoft.com/en-us/typography/opentype/spec/sbix)
+  table, which rides in a TrueType-flavoured sfnt, so the mode forces `.ttf`
+  output. An explicit `--type opentype` is coerced to `.ttf` with a warning.
+- **One merged file per source pack, named for the pack.** Each resource pack
+  passed as a colour source produces its own `Minecraft-<PackNamespace>.ttf`
+  (the pack's identity, capitalized) plus a matching sidecar, so N packs yield N
+  fonts and N sidecars. Within a pack, its font files still reuse the same
+  private-use codepoints for *different* art, which a single codepoint-keyed font
+  physically cannot round-trip, so every `(font_id, original_codepoint)` raster
+  pair is assigned a synthetic **stored codepoint** from plane 15/16 (`U+F0000`
+  onward) and all the pack's art coexists in the one file. Identical art across the
+  pack's font ids dedups to a single glyph. The sidecar bridges each pack
+  `(font_id, codepoint)` back to the stored codepoint (and the authoritative `gid`),
+  and its top-level `file` reference names that pack's merged font. Allocation is
+  deterministic per build, so the same input yields a byte-identical font + sidecar;
+  because the assignment can shift across pack updates, the font and sidecar ship as
+  a matched pair.
+- **Regular only.** Bold smears a bitmap grid and Italic is a vector shear, both
+  meaningless on a raster cell, so colour glyphs are emitted in Regular only.
+- **The sidecar carries what the font cannot.** Each pack's
+  `Minecraft-<PackNamespace>.colour-glyphs.json` (schema v2) is a versioned manifest
+  of every colour glyph's original codepoint, stored codepoint, `gid`, signed (and
+  possibly fractional) advance, origin, strike ppem, and the negative/fractional
+  space-provider advances that a `uint16` `hmtx` cannot hold, plus the top-level
+  `file` reference naming that pack's merged font. See its `schema_version` /
+  field layout in [`colour_sidecar.py`](minecraft_fontgen/colour_sidecar.py).
+
+> [!IMPORTANT]
+> **The consumer must read the strikes itself.** Java2D/AWT does not render (or
+> even *space*) sbix colour glyphs — with an `sbix` table present it returns a
+> `0` advance from `GlyphVector`, so a consumer that lays glyphs out that way
+> would stack them all at the origin. Consuming these fonts means walking the
+> `sbix` table for the PNG payloads and positioning from the sidecar's `advance`
+> and `origin`, not from `drawString` / `drawGlyphVector`. The font stays a
+> valid, portable colour font for any native-sbix renderer (FreeType, Chrome,
+> CoreText, DirectWrite).
+
+**Non-goals.** `COLR`/`CPAL` is deliberately not emitted: the packs' colour is
+baked raster rather than parametric vector (vectorizing it would be lossy and
+explode on gradients), and Java2D renders `COLRv0` as a flat black outline
+anyway. `CBDT`/`CBLC` is also a non-goal: fontTools ships no writer for its
+colour formats and its `uint8` glyph height cannot carry the 256px art `sbix`
+handles.
 
 ## Unicode Coverage
 

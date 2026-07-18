@@ -127,6 +127,13 @@ FONT_STYLES = [
 # FontTools Epoch
 MAC_EPOCH = 2082844800 # Seconds since 12:00 midnight, January 1, 1904 UTC
 
+# sfnt integer field bounds. Generic two's-complement limits used to clamp head
+# bbox and OS/2 metric fields into their on-disk widths; not specific to any one
+# table or feature.
+INT16_MIN = -0x8000  # signed 16-bit floor (head bbox, xAvgCharWidth)
+INT16_MAX = 0x7FFF   # signed 16-bit ceiling
+UINT16_MAX = 0xFFFF  # unsigned 16-bit ceiling (usWin metrics, char indices)
+
 # Glyph
 COLUMNS_PER_ROW = 16
 DEFAULT_GLYPH_SIZE = 8
@@ -144,6 +151,40 @@ NOTDEF_GLYPH = [
     [20, 0, 437, 675], # Inner rectangle
     [68, 48, 388, 627] # Outer rectangle
 ]
+
+# =====================================
+# === Colour glyphs (sbix) / DO NOT EDIT
+# =====================================
+# Colour is a second, additive output track. Enabling it forces TrueType
+# output (use_cff=False, .ttf) because the sbix strikes ride in a
+# TrueType-flavoured sfnt; the mono OpenType product is unchanged.
+SOURCE_DATE_EPOCH = None  # Fixed build epoch for reproducible builds; None keeps a real wall-clock timestamp (env SOURCE_DATE_EPOCH or this override it)
+COLOR_GLYPHS = False  # True enables the additive colour-glyph track
+SBIX_GRAPHIC_TYPE = "png "  # sbix graphicType tag (trailing space is significant)
+SBIX_RESOLUTION = 72  # sbix strike resolution in ppi
+COLOR_SIDECAR_NAME = "colour-glyphs.json"  # versioned sidecar filename suffix (per pack: Minecraft-<Namespace>.colour-glyphs.json)
+VANILLA_PACK_ID = "vanilla"  # identity of the vanilla/mono source: the mono product is just another identified source
+# Stored-codepoint plane window. Every (font_id, original_codepoint) raster pair is
+# assigned a synthetic STORED codepoint from this range so a single merged font can
+# carry codepoints that different pack font ids reuse (the classic PUA collision).
+# Allocation is linear from U+F0000 (plane 15, SPUA-A) into plane 16 (SPUA-B),
+# skipping the two noncharacters at the end of each plane. Never BMP PUA - that
+# range is small and already spoken for by the packs' own art.
+STORED_CP_START = 0xF0000  # first stored codepoint (plane 15)
+STORED_CP_END = 0x10FFFF  # last codepoint of plane 16 (the U+xFFFE/F noncharacters are skipped)
+UNITS_PER_PIXEL_BASE = UNITS_PER_EM // DEFAULT_GLYPH_SIZE  # 128 font units per source pixel at the base glyph size
+PPEM_ROUND_EPS = 1e-6  # tolerance before a non-integer strike ppem warns
+COLOR_PNG_COMPRESS_LEVEL = 6  # zlib level for embedded cell PNGs (size only; dedup hashes the pre-encode array)
+
+# Colour classifier thresholds (per-cell raster-vs-mono decision)
+COLOR_CLASSIFY_MAX_MONO_DIM = 128  # a cell larger than this on either axis is always raster
+COLOR_CLASSIFY_MIN_SIG_COLORS = 2  # significant opaque colours needed to call a cell raster
+COLOR_CLASSIFY_AA_FRAC_THRESHOLD = 0.02  # anti-aliased share of non-transparent pixels above which a cell is raster
+COLOR_CLASSIFY_OPAQUE_ALPHA = 240  # alpha at or above this counts as opaque
+COLOR_CLASSIFY_AA_LOW_ALPHA = 8  # alpha above this but below opaque counts as anti-aliased
+COLOR_CLASSIFY_SIG_MIN_COUNT = 15  # minimum pixel count for a colour to be significant
+COLOR_CLASSIFY_SIG_FRAC = 0.02  # fraction of opaque pixels for a colour to be significant
+COLOR_CLASSIFY_QUANT_SHIFT = 4  # bits shifted off each channel when quantizing colours (4 -> 4 bits per channel)
 
 # Italic Glyph
 ITALIC_SHEAR_VERTICAL = 5

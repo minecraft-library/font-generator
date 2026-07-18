@@ -2,7 +2,7 @@ import os
 import re
 import zipfile
 
-from minecraft_fontgen.config import RESOLVED_TEXTURE_DIR, WORK_DIR
+from minecraft_fontgen.config import RESOLVED_TEXTURE_DIR, VANILLA_PACK_ID, WORK_DIR
 from minecraft_fontgen.functions import log, parse_json, sanitize_fs_name
 
 _NAMESPACE_RE = re.compile(r"^[a-z0-9_.-]+$")
@@ -33,6 +33,13 @@ class AssetSource:
 
     name = "asset-source"
     is_vanilla = False
+
+    @property
+    def pack_id(self):
+        """The source's stable identity, used wherever font identity flows (colour
+        grouping, per-pack output naming). Vanilla is not special-cased: it is just
+        another identified source (see VanillaSource). Defaults to the source name."""
+        return self.name
 
     def get_font_json(self, font_id):
         raise NotImplementedError
@@ -177,12 +184,15 @@ def open_resource_pack(path):
 
 
 class VanillaSource(DirAssetSource):
-    """The vanilla layer: assets extracted from the client JAR into the work dir."""
+    """The vanilla layer: assets extracted from the client JAR into the work dir.
+
+    Carries its own pack_id like any resource pack, so the mono/vanilla product is
+    modelled as just another identified source rather than a special case."""
 
     is_vanilla = True
 
     def __init__(self, work_dir=WORK_DIR):
-        super().__init__(work_dir, "vanilla")
+        super().__init__(work_dir, VANILLA_PACK_ID)
 
 
 class AssetStack:
@@ -200,6 +210,26 @@ class AssetStack:
             raw = source.get_font_json(font_id)
             if raw is not None:
                 layers.append((source.name, raw))
+        return layers
+
+    def color_font_layers(self):
+        """Enumerates every font file every resource pack ships, for the colour
+        raster track. Yields (pack_id, font_id, raw_json) tuples with pack order
+        preserved, each pack's font ids sorted and deduped, and vanilla excluded
+        (it carries no colour cells). A grammar-invalid font id logs and skips
+        rather than raising, so one malformed name never aborts the enumeration.
+        This is the single seam both zip and dir sources feed."""
+        layers = []
+        for source in self.pack_sources():
+            for font_id in sorted(set(source.list_font_ids())):
+                try:
+                    raw = source.get_font_json(font_id)
+                except ValueError as error:
+                    log(f" → ⚠️ Skipping font '{font_id}' in pack '{source.pack_id}': {error}")
+                    continue
+                if raw is None:
+                    continue
+                layers.append((source.pack_id, font_id, raw))
         return layers
 
     def materialize_texture(self, ref):

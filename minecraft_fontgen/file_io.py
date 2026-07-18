@@ -1,15 +1,24 @@
+import hashlib
+import io
 import math
 import os
 import shutil
+import struct
 import sys
 import numpy as np
 
 from collections import defaultdict, deque, OrderedDict
 from tqdm import tqdm
-from PIL import Image
+from PIL import Image, ImageFile
 from minecraft_fontgen.asset_source import AssetStack, VanillaSource, split_resource_ref
-from minecraft_fontgen.config import ALT_FONT_IDS, ASCENT, BOLD_PACK_GLYPHS, DEFAULT_GLYPH_SIZE, INK_ALPHA_THRESHOLD, OUTPUT_DIR, MINECRAFT_JAR_DIR, PACK_FONT_IDS, WORK_DIR, UNITS_PER_EM, TEXTURE_PATH, FONT_STYLES
+from minecraft_fontgen.config import ALT_FONT_IDS, ASCENT, BOLD_PACK_GLYPHS, COLOR_CLASSIFY_AA_FRAC_THRESHOLD, COLOR_CLASSIFY_AA_LOW_ALPHA, COLOR_CLASSIFY_MAX_MONO_DIM, COLOR_CLASSIFY_MIN_SIG_COLORS, COLOR_CLASSIFY_OPAQUE_ALPHA, COLOR_CLASSIFY_QUANT_SHIFT, COLOR_CLASSIFY_SIG_FRAC, COLOR_CLASSIFY_SIG_MIN_COUNT, COLOR_PNG_COMPRESS_LEVEL, DEFAULT_GLYPH_SIZE, INK_ALPHA_THRESHOLD, OUTPUT_DIR, MINECRAFT_JAR_DIR, PACK_FONT_IDS, WORK_DIR, UNITS_PER_EM, TEXTURE_PATH, FONT_STYLES
 from minecraft_fontgen.functions import get_unicode_codepoint, in_unifont_ranges, log, is_silent, parse_json, sanitize_fs_name
+
+# Reference (HD) packs ship font textures whose zlib/IDAT streams a strict decoder
+# rejects (the game's own loader tolerates them, and so must this tool). Allowing
+# truncated streams recovers the art for every such texture; clean vanilla sheets
+# decode identically, so the mono product is unchanged.
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
 # ==========================================
@@ -52,14 +61,18 @@ def parse_provider_file(file, format, stack=None):
     return providers
 
 
-def collect_pack_providers(stack):
+def collect_pack_providers(stack, color_glyphs=False):
     """Parses and slices the default-font providers contributed by resource packs.
 
     The returned list is ordered so that appending it after the vanilla
     providers reproduces the game's priority under build_glyph_map's last-wins
     merge: later packs beat earlier packs, every pack beats vanilla, a pack's
     default.json beats its include/default.json, and within one file the
-    first-listed provider wins."""
+    first-listed provider wins.
+
+    color_glyphs mirrors the resolved --color-glyphs option: when set, the
+    non-default font ids are ingested by collect_color_providers instead, so the
+    "tool does not build this font" warning is suppressed for them here."""
     providers = []
     for font_id in PACK_FONT_IDS:
         for source in stack.pack_sources():
@@ -77,12 +90,134 @@ def collect_pack_providers(stack):
     if providers:
         slice_provider_tiles(providers)
 
-    for source in stack.pack_sources():
-        for font_id in source.list_font_ids():
-            if font_id not in PACK_FONT_IDS and font_id not in ALT_FONT_IDS:
-                log(f"→ ⚠️ Pack '{source.name}' defines font '{font_id}', which this tool does not build")
+    # In colour mode these font ids are ingested by collect_color_providers, so
+    # only warn about them on the mono-only path.
+    if not color_glyphs:
+        for source in stack.pack_sources():
+            for font_id in source.list_font_ids():
+                if font_id not in PACK_FONT_IDS and font_id not in ALT_FONT_IDS:
+                    log(f"→ ⚠️ Pack '{source.name}' defines font '{font_id}', which this tool does not build")
 
     return providers
+
+def collect_color_providers(stack, color_glyphs=False):
+    """Parses and slices every pack font file's colour cells, tagged with font_id,
+    plus the space records that carry negative/fractional advances.
+
+    Returns [] immediately when the colour track is disabled (color_glyphs False).
+    Otherwise it walks every font id in every pack (the classifier drops the mono
+    cells, so parsing the default-font ids too is cheap and never misses colour art
+    embedded there), stamps each provider with its font_id, and slices only the
+    bitmap providers; the space records carry no texture and bypass slicing.
+    Malformed font JSON is skipped per font id rather than aborting the whole colour
+    pass."""
+    if not color_glyphs:
+        return []
+    providers = []
+    for pack_name, font_id, raw in stack.color_font_layers():
+        try:
+            providers += parse_json_providers(raw, stack, layer_name=pack_name, font_id=font_id, color_mode=True)
+        except (ValueError, AttributeError) as error:
+            log(f" → ⚠️ Skipping malformed font JSON '{font_id}' in pack '{pack_name}': {error}")
+    slice_provider_tiles([p for p in providers if p.get("type") != "space"], color_mode=True)
+    return providers
+
+def build_color_glyph_map(providers):
+    """Groups the raster (colour) tiles by font id for the per-font-id colour compiler.
+
+    Returns {font_id: OrderedDict(codepoint -> tile)}, sorted by codepoint within
+    each font id, and {} when no tile classified raster. Within one font file the
+    last provider to define a codepoint wins (mirroring the game's first-wins walk
+    once providers are appended in reverse); across font ids codepoints stay
+    isolated in their own bucket, so the private-use codepoints reference packs
+    reuse across font files never collide. Space records carry no tiles and are
+    skipped here; their
+    advances reach the sidecar separately. The classifier having removed these
+    codepoints from the mono map is what keeps the mono fonts raster-free."""
+    buckets = defaultdict(dict)
+    for provider in providers:
+        for tile in provider.get("tiles", []):
+            if tile.get("render_mode") != "raster":
+                continue
+            buckets[tile["font_id"]][tile["codepoint"]] = tile
+
+    color_map = {}
+    for font_id, by_codepoint in buckets.items():
+        color_map[font_id] = OrderedDict(
+            sorted(by_codepoint.items(), key=lambda item: item[0])
+        )
+    return color_map
+
+def group_color_space_rows(providers):
+    """Groups space-provider advance rows by font id for the colour sidecar.
+
+    Returns {font_id: [(codepoint, advance), ...]}. Space codepoints mint no glyph,
+    so these rows ride into the sidecar via each font id's storage rather than the
+    glyph map. Advances are carried verbatim (signed, possibly fractional)."""
+    space_rows = defaultdict(list)
+    for provider in providers:
+        if provider.get("type") != "space":
+            continue
+        for codepoint, advance in provider.get("advances", []):
+            space_rows[provider.get("font_id")].append((codepoint, advance))
+    return dict(space_rows)
+
+def color_font_namespace(pack_id):
+    """Derives the capitalized, filesystem-safe namespace for a pack's colour output
+    from its pack id (e.g. 'mypack' -> 'Mypack'), so the merged font lands at
+    Minecraft-<Namespace>.ttf. Only the first character is upper-cased; internal
+    capitals are preserved."""
+    safe = sanitize_fs_name(pack_id)
+    return safe[:1].upper() + safe[1:]
+
+def collect_color_fonts(stack, color_glyphs=False):
+    """Composes the per-source-pack colour fonts, mirroring how collect_pack_providers
+    composes the mono pack providers: one entry per pack that ships colour art.
+
+    Returns [] when the colour track is off (color_glyphs False). Otherwise it ingests
+    every pack's colour cells and space advances, partitions them by source pack (each
+    pack becomes its own merged sbix font, not one font for the whole run), and returns
+    a list of colour font specs consumed by create_font_files alongside the mono styles.
+    Each spec carries the pack's identity (pack_id), its capitalized output namespace
+    (family_qualifier / Minecraft-<Namespace>.ttf), and the pack's colour glyph map
+    and space rows. Packs whose colour font ids yield no raster art and no space rows
+    are dropped. Namespaces that collide after sanitization are disambiguated with a
+    numeric suffix so N packs always yield N distinct files."""
+    if not color_glyphs:
+        return []
+
+    providers = collect_color_providers(stack, color_glyphs)
+
+    # Partition by source pack (the provider's layer is its pack id). Stack order is
+    # preserved, so the pack sequence is deterministic.
+    by_pack = OrderedDict()
+    for provider in providers:
+        by_pack.setdefault(provider.get("layer"), []).append(provider)
+
+    color_fonts = []
+    used_namespaces = {}
+    for pack_id, pack_providers in by_pack.items():
+        color_map = build_color_glyph_map(pack_providers)
+        space_rows = group_color_space_rows(pack_providers)
+        if not color_map and not space_rows:
+            continue
+
+        base = color_font_namespace(pack_id)
+        used_namespaces[base] = used_namespaces.get(base, 0) + 1
+        namespace = base if used_namespaces[base] == 1 else f"{base}{used_namespaces[base]}"
+
+        color_fonts.append({
+            "name": namespace,
+            "enabled": True,
+            "color": True,
+            "bold": False,
+            "italic": False,
+            "pack_id": pack_id,
+            "family_qualifier": namespace,
+            "color_map": color_map,
+            "space_rows": space_rows,
+        })
+    return color_fonts
 
 def parse_bin_providers(byte_data):
     """Parses legacy binary glyph_sizes.bin format (Minecraft 1.8.9 and earlier).
@@ -174,11 +309,18 @@ def parse_bin_providers(byte_data):
 
     return providers
 
-def parse_json_providers(byte_data, stack=None, layer_name="vanilla"):
+def parse_json_providers(byte_data, stack=None, layer_name="vanilla", font_id=None, color_mode=False):
     """Parses the JSON font provider format into a list of provider dicts.
 
     Texture references resolve through the asset stack, so resource packs can
-    override vanilla textures and reference their own namespaces."""
+    override vanilla textures and reference their own namespaces.
+
+    color_mode=False is behaviourally identical to the mono path: only bitmap
+    providers are kept and every other type is warn-skipped. color_mode=True
+    also captures space providers (their signed/fractional advances feed the
+    colour sidecar) and logs the remaining non-bitmap types by name. Every
+    emitted provider is stamped with font_id (None on the mono path), so a tile
+    can always be traced back to the pack font file it came from."""
     if stack is None:
         stack = AssetStack([VanillaSource()])
     raw_text = byte_data.decode("utf-8", errors="surrogatepass").lstrip("\ufeff")
@@ -189,7 +331,19 @@ def parse_json_providers(byte_data, stack=None, layer_name="vanilla"):
     for index, provider in enumerate(data.get("providers", [])):
         provider_type = provider.get("type")
         if provider_type != "bitmap":
-            log(f" → ⚠️ Skipping unsupported '{provider_type}' provider in {layer_name} (only bitmap providers are converted)")
+            if not color_mode:
+                log(f" → ⚠️ Skipping unsupported '{provider_type}' provider in {layer_name} (only bitmap providers are converted)")
+                continue
+            if provider_type == "space":
+                space = parse_space_provider(provider, layer_name, font_id)
+                if space is not None:
+                    providers.append(space)
+            elif provider_type == "reference":
+                log(f" → ℹ️ Reference provider {index} in {layer_name} points at a font ingested independently; not following")
+            elif provider_type in ("ttf", "legacy_unicode", "unihex"):
+                log(f" → ⚠️ Skipping '{provider_type}' provider {index} in {layer_name} (outside the raster colour track)")
+            else:
+                log(f" → ⚠️ Skipping unsupported '{provider_type}' provider in {layer_name} (only bitmap providers are converted)")
             continue
 
         rows = provider.get("chars", [])
@@ -248,26 +402,70 @@ def parse_json_providers(byte_data, stack=None, layer_name="vanilla"):
             "name": name,
             "output": output,
             "layer": layer_name,
+            "font_id": font_id,
             "tiles": []
         })
 
     return providers
 
-def slice_provider_tiles(providers):
-    """Slices each provider's bitmap PNG into individual glyph tiles with contour and SVG data."""
+def parse_space_provider(provider, layer_name, font_id):
+    """Captures a space provider's advances as sidecar rows.
+
+    Space codepoints mint no glyph (uint16 hmtx cannot even hold their negative
+    values); their advances are the sole carrier of the pack's negative and
+    fractional spacing to the colour sidecar. Each advance is kept verbatim,
+    preserving int-vs-float type and sign with no rounding or abs. Booleans are
+    dropped explicitly (bool is an int subclass that would otherwise slip in as
+    an advance of 1 or 0), as are non-numeric values and codepoints that fail to
+    resolve or are the null glyph. Returns the space record, or None when nothing
+    survives."""
+    advances = provider.get("advances")
+    if not isinstance(advances, dict) or not advances:
+        return None
+    rows = []
+    for char, value in advances.items():
+        codepoint = get_unicode_codepoint(char)
+        if codepoint is None or codepoint == 0x0000:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        rows.append((codepoint, value))
+    if not rows:
+        return None
+    return {"type": "space", "font_id": font_id, "layer": layer_name, "advances": rows}
+
+def slice_provider_tiles(providers, color_mode=False):
+    """Slices each provider's bitmap PNG into individual glyph tiles with contour and SVG data.
+
+    color_mode=False reproduces the original mono behaviour byte-for-byte. When
+    color_mode=True the debug side-effects (whole-sheet PNG copies and per-tile
+    BMPs) are kept off so the additive colour track never litters the work dir,
+    and the decoded RGBA sheet is available per provider for the raster path."""
     log(f"→ ✂️ Slicing bitmap providers into tiles...")
 
     debug_svg_regular = any(s.get("debug", {}).get("svg") for s in FONT_STYLES if s["pixel_style"] == "Regular")
     debug_svg_bold = any(s.get("debug", {}).get("svg") for s in FONT_STYLES if s["pixel_style"] == "Bold")
-    debug_svg = debug_svg_regular or debug_svg_bold
+    # The colour path keeps every debug writer off regardless of FONT_STYLES flags
+    # (the per-tile BMP is gated at its crop_tile call site below).
+    debug_svg = (debug_svg_regular or debug_svg_bold) and not color_mode
     debug_bmp = any(s.get("debug", {}).get("bmp") for s in FONT_STYLES)
 
     for provider in providers:
-        bitmap = binarize_provider_bitmap(provider)
-        if bitmap is None:
+        # Space records carry no texture; their advances were captured at parse
+        # time and go straight to the sidecar, so there is nothing to slice.
+        if provider.get("type") == "space":
+            continue
+        # One decode per provider serves both the binary crop and (on the colour
+        # path) every RGBA cell crop; the sheet is rebound each iteration so only
+        # one provider's sheet is ever live.
+        rgba_sheet = load_provider_rgba(provider)
+        if rgba_sheet is None:
             log(f" → ⚠️ Skipping '{provider['name']}' (texture missing: {provider['file_path']})")
             provider["tiles"] = []
             continue
+        bitmap = binarize_rgba(rgba_sheet)
+        if not color_mode:
+            _write_provider_debug_images(provider, bitmap)
         tiles = []
 
         # Calculate tile dimensions from the chars grid (the game divides the
@@ -306,13 +504,33 @@ def slice_provider_tiles(providers):
                     "display_height": provider["height"],
                     "ascent": provider.get("ascent", 0),
                     "layer": provider.get("layer", "vanilla"),
+                    "font_id": provider.get("font_id"),
                     "location": (tile_column, tile_row),
                     "output": f"{provider['output']}/tiles/{tile_row:02}_{tile_column:02}_{codepoint:04X}"
                 }
                 tiles.append(tile)
 
-                # Crop tile bitmap from full bitmap
-                tile["bitmap"] = crop_tile(bitmap, tile, save=debug_bmp)
+                if color_mode:
+                    # Branch before the binary crop and the destructive trace. A
+                    # colour cell either becomes a raster strike (its pixels kept
+                    # verbatim as a PNG) or falls through to the mono outline path.
+                    # Hold at most one cell's RGBA live: encode+hash, then drop it.
+                    # A raster tile never reaches the binary crop below, so it holds
+                    # only bytes + hash and never a redundant cropped bitmap image.
+                    cell = crop_tile_rgba(rgba_sheet, tile)
+                    if classify_render_mode(cell) == "raster":
+                        cell_width, cell_height = cell.size
+                        tile["render_mode"] = "raster"
+                        tile["raster_png"] = encode_cell_png(cell)
+                        tile["content_hash"] = raster_cell_hash(cell)
+                        tile["raster_size"] = (cell_width, cell_height)
+                        del cell
+                        continue
+                    tile["render_mode"] = "mono"
+                    del cell
+
+                # Crop tile bitmap from full bitmap (mono outline path only)
+                tile["bitmap"] = crop_tile(bitmap, tile, save=debug_bmp and not color_mode)
 
                 # Trace contours for regular and bold styles
                 tile["pixels"] = trace_tile_contours(tile)
@@ -334,42 +552,80 @@ def slice_provider_tiles(providers):
     total_tiles = sum(len(p["tiles"]) for p in providers)
     log(f" → 🔢 Sliced {total_tiles} glyphs across {len(providers)} providers...")
 
+def load_provider_rgba(provider):
+    """Decodes a provider's texture to an RGBA image, or None when it is missing.
+
+    This is the single decode that feeds both the binary crop and (on the colour
+    path) every RGBA cell crop for the provider. It writes nothing to disk and is
+    never stored on the provider dict, so the decoded sheet is collectable as soon
+    as the caller drops it.
+
+    A texture that cannot be decoded at all (genuinely corrupt beyond the
+    truncated-stream tolerance above) is warn-skipped by returning None rather
+    than aborting the whole run: colour mode decodes hundreds of pack textures,
+    so one bad file must never sink the build."""
+    if not os.path.isfile(provider["file_path"]):
+        return None
+    try:
+        return Image.open(provider["file_path"]).convert("RGBA")
+    except (OSError, ValueError, SyntaxError) as error:
+        log(f" → ⚠️ Skipping '{provider['name']}' (texture failed to decode: "
+            f"{provider['file_path']}: {error})")
+        return None
+
+def binarize_rgba(rgba):
+    """Binarizes an already-decoded RGBA image to black ink on white.
+
+    Coverage follows the game's rule: a pixel is part of the glyph when its
+    alpha exceeds INK_ALPHA_THRESHOLD. Images with no transparency at all fall
+    back to the legacy luminance threshold. This is the exact binarization body
+    that used to live inside binarize_provider_bitmap, operating on the passed
+    image so the decode can be shared with the colour crops."""
+    alpha = rgba.getchannel("A")
+    if alpha.getextrema() == (255, 255):
+        bg = Image.new("RGBA", rgba.size, (0, 0, 0, 255))
+        flat = Image.alpha_composite(bg, rgba).convert("L")
+        flat = Image.eval(flat, lambda x: 255 - x)
+        return flat.point(lambda x: 0 if x < 128 else 255, '1')
+    return alpha.point(lambda a: 0 if a > INK_ALPHA_THRESHOLD else 255, '1')
+
+def _write_provider_debug_images(provider, binary):
+    """Writes the whole-sheet debug copies: the original PNG and the grayscale
+    binarization. Extracted from binarize_provider_bitmap so the colour path can
+    keep these side-effects off while the mono path stays byte-identical."""
+    output_file = provider["output"] + "/" + provider["name"]
+    shutil.copyfile(provider["file_path"], output_file + ".png")
+    binary.save(f"{output_file}_grayscale.png")
+
 def binarize_provider_bitmap(provider):
     """Reads a provider PNG and binarizes it to black ink on white.
 
     Coverage follows the game's rule: a pixel is part of the glyph when its
     alpha exceeds INK_ALPHA_THRESHOLD. Images with no transparency at all fall
     back to the legacy luminance threshold. Returns None when the texture file
-    is missing."""
-    if not os.path.isfile(provider["file_path"]):
+    is missing. Kept as a thin wrapper over the decode/binarize/debug-write split
+    so its signature and side-effects are unchanged for existing callers."""
+    rgba = load_provider_rgba(provider)
+    if rgba is None:
         return None
-    img = Image.open(provider["file_path"]).convert("RGBA")
-
-    alpha = img.getchannel("A")
-    if alpha.getextrema() == (255, 255):
-        bg = Image.new("RGBA", img.size, (0, 0, 0, 255))
-        flat = Image.alpha_composite(bg, img).convert("L")
-        flat = Image.eval(flat, lambda x: 255 - x)
-        binary = flat.point(lambda x: 0 if x < 128 else 255, '1')
-    else:
-        binary = alpha.point(lambda a: 0 if a > INK_ALPHA_THRESHOLD else 255, '1')
-
-    # Copy original and save grayscale
-    output_file = provider["output"] + "/" + provider["name"]
-    shutil.copyfile(provider["file_path"], output_file + ".png")
-    binary.save(f"{output_file}_grayscale.png")
-
+    binary = binarize_rgba(rgba)
+    _write_provider_debug_images(provider, binary)
     return binary
 
-def crop_tile(bitmap, tile, save=True):
-    """Crops a single glyph tile from a full provider bitmap and optionally saves it to disk."""
+def _tile_box(tile):
+    """Returns the (x0, y0, x1, y1) crop rectangle for a tile. Single source of
+    truth shared by crop_tile and crop_tile_rgba so the binary crop and the RGBA
+    crop can never drift."""
     x, y = tile["location"]
     width, height = tile["size"]
     glyph_width = int(width)
     px, py = (x * glyph_width, y * height)
+    return (px, py, px + glyph_width, py + height)
 
+def crop_tile(bitmap, tile, save=True):
+    """Crops a single glyph tile from a full provider bitmap and optionally saves it to disk."""
     bitmap = {
-        "image": bitmap.crop((px, py, px + glyph_width, py + height)),
+        "image": bitmap.crop(_tile_box(tile)),
         "file": f"{tile['output']}/glyph.bmp"
     }
 
@@ -377,6 +633,92 @@ def crop_tile(bitmap, tile, save=True):
         os.makedirs(tile["output"], exist_ok=True)
         bitmap["image"].save(bitmap["file"])
     return bitmap
+
+def crop_tile_rgba(rgba_sheet, tile):
+    """Crops a single glyph tile's RGBA pixels from the decoded provider sheet.
+
+    Shares _tile_box with crop_tile so the colour crop matches the binary crop
+    exactly. Writes nothing to disk and attaches nothing to the tile; the caller
+    consumes it immediately (classify/encode/hash) and drops it so at most one
+    cell's RGBA is ever live."""
+    return rgba_sheet.crop(_tile_box(tile))
+
+def classify_render_mode(rgba_cell):
+    """Decides whether a colour cell keeps its pixels (raster) or reduces to a
+    mono outline. Returns 'mono' or 'raster'.
+
+    The taxonomy is checked cheapest-first: a fully transparent cell is mono (it
+    mints no glyph either way); a cell larger than COLOR_CLASSIFY_MAX_MONO_DIM on
+    either axis is raster unconditionally, so huge art skips the O(pixels)
+    colour/anti-alias scan entirely; a cell whose non-transparent pixels are more
+    than COLOR_CLASSIFY_AA_FRAC_THRESHOLD anti-aliased is raster; otherwise the
+    cell is raster only when it carries at least COLOR_CLASSIFY_MIN_SIG_COLORS
+    significant opaque colours (quantized to COLOR_CLASSIFY_QUANT_SHIFT bits per
+    channel). Everything else is a flat single-colour shape the mono outline path
+    reproduces losslessly."""
+    arr = np.asarray(rgba_cell)
+    alpha = arr[:, :, 3].astype(int)
+    nontrans = int((alpha > 0).sum())
+    if nontrans == 0:
+        return "mono"
+
+    cell_w, cell_h = rgba_cell.size
+    if max(cell_w, cell_h) > COLOR_CLASSIFY_MAX_MONO_DIM:
+        return "raster"
+
+    aa = int(((alpha > COLOR_CLASSIFY_AA_LOW_ALPHA) & (alpha < COLOR_CLASSIFY_OPAQUE_ALPHA)).sum())
+    if aa / nontrans > COLOR_CLASSIFY_AA_FRAC_THRESHOLD:
+        return "raster"
+
+    opaque_mask = alpha >= COLOR_CLASSIFY_OPAQUE_ALPHA
+    opaque = int(opaque_mask.sum())
+    if opaque == 0:
+        return "mono"
+
+    quant = (arr[:, :, :3][opaque_mask].astype(int) >> COLOR_CLASSIFY_QUANT_SHIFT)
+    keys = (quant[:, 0] << 8) | (quant[:, 1] << 4) | quant[:, 2]
+    _, counts = np.unique(keys, return_counts=True)
+    threshold = max(COLOR_CLASSIFY_SIG_MIN_COUNT, opaque * COLOR_CLASSIFY_SIG_FRAC)
+    significant = int((counts >= threshold).sum())
+    return "raster" if significant >= COLOR_CLASSIFY_MIN_SIG_COLORS else "mono"
+
+def _canonical_rgba_array(rgba_cell):
+    """Returns the cell as an HxWx4 uint8 array with every fully transparent pixel
+    forced to (0, 0, 0, 0). Shared by the PNG encoder and the content hash so the
+    embedded bytes and the dedup digest always agree on the same pixels, and so
+    invisible transparent-RGB garbage never splits a dedup group or perturbs the
+    output across Pillow/zlib versions."""
+    array = np.asarray(rgba_cell.convert("RGBA")).copy()
+    array[array[:, :, 3] == 0] = (0, 0, 0, 0)
+    return array
+
+def encode_cell_png(rgba_cell):
+    """Encodes a colour cell to deterministic lossless RGBA PNG bytes.
+
+    Reconstructing the image from the canonicalized raw array drops any inherited
+    icc/dpi/tEXt metadata, and saving with no pnginfo leaves only IHDR/IDAT/IEND,
+    so two builds of the same pixels under a fixed Pillow+zlib are byte-identical.
+    The zlib level affects only file size (the dedup hash is taken over the
+    pre-encode array), so it stays at the size/speed default."""
+    clean = Image.fromarray(_canonical_rgba_array(rgba_cell), "RGBA")
+    buffer = io.BytesIO()
+    clean.save(buffer, "PNG", optimize=False, compress_level=COLOR_PNG_COMPRESS_LEVEL)
+    return buffer.getvalue()
+
+def normalized_cell_bytes(cell):
+    """Returns the digest input for a colour cell: its big-endian width and height
+    followed by the canonical RGBA bytes. Folding the dimensions into the digest
+    means two differently-sized cells that happen to share a byte prefix can never
+    collide."""
+    array = _canonical_rgba_array(cell)
+    height, width = array.shape[:2]
+    return struct.pack(">II", width, height) + array.tobytes()
+
+def raster_cell_hash(cell):
+    """Returns the content hash stamped on a raster tile: sha256 over the
+    normalized RGBA bytes (not the PNG bytes), so the dedup key survives PNG
+    encoder drift."""
+    return hashlib.sha256(normalized_cell_bytes(cell)).hexdigest()
 
 def trace_tile_contours(tile):
     """Traces contours from a tile's bitmap for both regular and bold styles."""
@@ -963,6 +1305,7 @@ def build_glyph_map(providers, unifont_glyphs, stack=None, inset_vertices=True):
                     "display_height": tile.get("display_height"),
                     "ascent": tile["ascent"],
                     "layer": tile.get("layer", "vanilla"),
+                    "font_id": tile.get("font_id"),
                     "pixels": tile["pixels"][style],
                     "svg": tile["svg"].get(style) if tile.get("svg") else None,
                     "source": "provider"

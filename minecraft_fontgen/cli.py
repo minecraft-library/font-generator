@@ -1,9 +1,10 @@
 import argparse
 import os
+import sys
 
 from dataclasses import dataclass
 
-from minecraft_fontgen.config import OUTPUT_DIR, OPENTYPE, FONT_STYLES, RESOURCE_PACKS, INSET_SHARED_VERTICES
+from minecraft_fontgen.config import OUTPUT_DIR, OPENTYPE, FONT_STYLES, RESOURCE_PACKS, INSET_SHARED_VERTICES, COLOR_GLYPHS
 
 VALID_STYLES = {"regular", "bold", "italic", "bolditalic", "galactic", "illageralt"}
 
@@ -19,6 +20,7 @@ class BuildOptions:
     validate: bool
     resource_packs: tuple[str, ...]
     inset_vertices: bool
+    color_glyphs: bool
 
 
 def _load_env_file(path=".env"):
@@ -63,6 +65,10 @@ def parse_args():
                         help="Disable the 1-unit inset of vertices shared between contours "
                              "(the inset silences FontForge wrong-direction warnings, but some "
                              "renderers show hairline gaps where contours touch)")
+    parser.add_argument("--color-glyphs", action="store_true", default=None,
+                        help="Additionally emit a colour (sbix) TrueType font per pack font id "
+                             "plus a JSON sidecar; forces TrueType/.ttf output. The mono "
+                             "OpenType/TrueType fonts are still emitted unchanged")
 
     args = parser.parse_args()
 
@@ -128,6 +134,24 @@ def parse_args():
 
     output_ext = "otf" if use_cff else "ttf"
 
+    # --- colour glyphs ---
+    if args.color_glyphs is not None and args.color_glyphs:
+        color_glyphs = True
+    elif os.environ.get("MCFONT_COLOR_GLYPHS", "").lower() in ("1", "true", "yes"):
+        color_glyphs = True
+    else:
+        color_glyphs = COLOR_GLYPHS
+
+    # Colour strikes ride in a TrueType-flavoured sfnt, so the mode forces
+    # TrueType/.ttf. If the user explicitly asked for OpenType we warn about the
+    # override; a defaulted or already-TrueType type is coerced silently.
+    if color_glyphs and use_cff:
+        if raw_type is not None and raw_type.strip().lower() in ("opentype", "otf"):
+            print("→ ⚠️ --color-glyphs forces TrueType output; ignoring --type "
+                  f"{raw_type}", file=sys.stderr)
+        use_cff = False
+        output_ext = "ttf"
+
     # --- validate ---
     if args.validate is not None and args.validate:
         validate = True
@@ -169,4 +193,5 @@ def parse_args():
         validate=validate,
         resource_packs=tuple(resource_packs),
         inset_vertices=inset_vertices,
+        color_glyphs=color_glyphs,
     )

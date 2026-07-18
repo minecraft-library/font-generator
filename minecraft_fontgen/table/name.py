@@ -36,20 +36,30 @@ def _add(name_table, name_id, text):
     for (plat, enc, lang) in _PLATFORMS:
         name_table.names.append(makeName(text, name_id, plat, enc, lang))
 
-def create_font_name_table(font, bold = False, italic = False):
-    """Creates the 'name' table with font family, style, version, and metadata strings."""
+def create_font_name_table(font, bold = False, italic = False, family_qualifier = None):
+    """Creates the 'name' table with font family, style, version, and metadata strings.
+
+    family_qualifier is None for every mono style (behaviour is byte-identical to
+    before). The colour track passes the per-font-id string so each colour font
+    carries a distinct family / full name / PostScript name; without it two colour
+    fonts built from different font ids would collide on family+subfamily+fullname
+    at OS install time (a distinct output filename alone does not prevent that)."""
     name = font["name"] = newTable("name")
     name.names = []
     gtype = get_font_type(bold, italic)
 
-    family      = f"{OUTPUT_FONT_NAME} Font"                 # NameID 1
+    # The qualifier folds into the brand family so every downstream name (full
+    # name, unique id, PostScript name, typographic family) inherits it.
+    brand = f"{OUTPUT_FONT_NAME} {family_qualifier}" if family_qualifier else OUTPUT_FONT_NAME
+
+    family      = f"{brand} Font"                     # NameID 1
     subfamily   = gtype                               # NameID 2
-    full_name   = f"{OUTPUT_FONT_NAME} Font {gtype}"         # NameID 4
+    full_name   = f"{brand} Font {gtype}"             # NameID 4
     version_str = f"Version {VERSION}"                # NameID 5
-    ps_name     = _ps_sanitize(f"{OUTPUT_FONT_NAME}{gtype}") # NameID 6
+    ps_name     = _ps_sanitize(f"{brand}{gtype}")     # NameID 6
 
     # Recommended “typographic” names (IDs 16/17) mirror 1/2 for simple families
-    typo_family    = f"{OUTPUT_FONT_NAME}"                   # Often just brand family without "Font"
+    typo_family    = f"{brand}"                        # Often just brand family without "Font"
     typo_subfamily = gtype
 
     # Unique font identifier (NameID 3) — common format: “Version X;Manufacturer;Family Subfamily”

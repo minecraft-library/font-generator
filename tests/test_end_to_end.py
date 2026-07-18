@@ -37,9 +37,10 @@ def test_pack_glyphs_flow_into_generated_fonts():
 
     styles = [dict(s) for s in FONT_STYLES if s["name"] in ("Regular", "Bold", "Italic")]
     os.makedirs("out", exist_ok=True)
-    files = create_font_files(glyph_map, True, styles, "out", "Minecraft", "otf")
+    files, color_results = create_font_files(glyph_map, True, styles, "out", "Minecraft", "otf")
 
     assert sorted(os.path.basename(f) for f in files) == ["Minecraft-Bold.otf", "Minecraft-Italic.otf", "Minecraft-Regular.otf"]
+    assert color_results == []
 
     regular = TTFont(next(f for f in files if "Regular" in f))
     cmap = regular.getBestCmap()

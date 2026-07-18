@@ -74,7 +74,16 @@ def test_vanilla_source_reads_work_dir():
 
     assert source.is_vanilla is True
     assert source.name == "vanilla"
+    # vanilla is just another identified source: it stores its own pack id
+    assert source.pack_id == "vanilla"
     assert source.get_font_json("minecraft:include/default") == b"{}"
+
+
+def test_pack_source_identity_defaults_to_name(tmp_path):
+    from minecraft_fontgen.asset_source import DirAssetSource
+
+    source = DirAssetSource(str(tmp_path), "aurora")
+    assert source.pack_id == "aurora"
 
 
 def test_close_closes_all_sources():

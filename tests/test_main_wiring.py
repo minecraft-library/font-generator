@@ -26,7 +26,7 @@ from minecraft_fontgen.cli import BuildOptions
 from helpers import FakeSource
 
 
-def _opts(resource_packs=(), validate=False):
+def _opts(resource_packs=(), validate=False, color_glyphs=False):
     return BuildOptions(
         silent=True,
         output_dir="output",
@@ -37,6 +37,7 @@ def _opts(resource_packs=(), validate=False):
         validate=validate,
         resource_packs=resource_packs,
         inset_vertices=True,
+        color_glyphs=color_glyphs,
     )
 
 
@@ -58,17 +59,35 @@ def _stub_pipeline(monkeypatch, calls):
         calls.append("parse")
         return []
 
-    def collect_pack_providers(stack):
+    def collect_pack_providers(stack, color_glyphs=False):
         calls.append("collect")
+        calls.append(("collect_flag", color_glyphs))
         return []
 
     def build_glyph_map(providers, unifont_glyphs, stack, inset_vertices=True):
         calls.append("build")
         return {}
 
-    def create_font_files(glyph_map, use_cff, output_fonts, output_dir, output_font_name, output_file_ext):
+    def create_font_files(glyph_map, use_cff, output_fonts, output_dir, output_font_name,
+                          output_file_ext, color_fonts=()):
         calls.append("create")
-        return []
+        # one colour result per collected colour pack, so the sidecar loop runs
+        results = [(spec, f"out/{output_font_name}-{spec['name']}.ttf", object())
+                   for spec in color_fonts]
+        return [], results
+
+    def collect_color_fonts(stack, color_glyphs=False):
+        calls.append("collect_color")
+        calls.append(("collect_color_flag", color_glyphs))
+        return [{"name": "Testpack"}]
+
+    def build_sidecar(file, storage, epoch):
+        calls.append("build_sidecar")
+        return {}
+
+    def write_sidecar(sidecar, output_dir, name=None):
+        calls.append("write_sidecar")
+        return f"out/{name}"
 
     monkeypatch.setattr(main_mod, "clean_directories", clean_directories)
     monkeypatch.setattr(main_mod, "download_minecraft_assets", download_minecraft_assets)
@@ -76,6 +95,9 @@ def _stub_pipeline(monkeypatch, calls):
     monkeypatch.setattr(main_mod, "collect_pack_providers", collect_pack_providers)
     monkeypatch.setattr(main_mod, "build_glyph_map", build_glyph_map)
     monkeypatch.setattr(main_mod, "create_font_files", create_font_files)
+    monkeypatch.setattr(main_mod, "collect_color_fonts", collect_color_fonts)
+    monkeypatch.setattr(main_mod, "build_sidecar", build_sidecar)
+    monkeypatch.setattr(main_mod, "write_sidecar", write_sidecar)
 
 
 def test_invalid_pack_exits_before_any_work(monkeypatch):
@@ -139,6 +161,42 @@ def test_stack_closes_when_download_fails(monkeypatch):
     assert "parse" not in calls
     assert fakes["p1"].closed
     assert fakes["p2"].closed
+
+
+def test_main_dispatches_color_after_build(monkeypatch):
+    calls = []
+    monkeypatch.setattr(main_mod, "parse_args", lambda: _opts(color_glyphs=True))
+    monkeypatch.setattr(main_mod, "open_resource_pack", lambda path: FakeSource(path))
+    _stub_pipeline(monkeypatch, calls)
+
+    main_mod.main()
+
+    # colour is collected after the pack providers; the fonts are built in the shared
+    # create loop, and each pack's sidecar is written strictly after it.
+    assert "create" in calls
+    assert calls.index("collect_color") > calls.index("collect")
+    assert calls.index("build_sidecar") > calls.index("create")
+    assert calls.index("write_sidecar") > calls.index("build_sidecar")
+    # the resolved option is propagated as a parameter to the ingestion helpers
+    # (no module-level config global is hijacked)
+    assert ("collect_flag", True) in calls
+    assert ("collect_color_flag", True) in calls
+
+
+def test_color_off_skips_color_and_keeps_mono(monkeypatch):
+    calls = []
+    monkeypatch.setattr(main_mod, "parse_args", lambda: _opts(color_glyphs=False))
+    monkeypatch.setattr(main_mod, "open_resource_pack", lambda path: FakeSource(path))
+    _stub_pipeline(monkeypatch, calls)
+
+    main_mod.main()
+
+    # colour off: none of the colour collaborators run, the mono create still does
+    assert "create" in calls
+    for colour_call in ("collect_color", "build_sidecar", "write_sidecar"):
+        assert colour_call not in calls
+    # the pack-provider pass still receives the resolved flag (False here)
+    assert ("collect_flag", False) in calls
 
 
 def test_second_pack_open_failure_closes_first(monkeypatch):
