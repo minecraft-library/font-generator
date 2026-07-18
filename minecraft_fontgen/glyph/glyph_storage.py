@@ -68,6 +68,21 @@ class GlyphStorage:
             elif table.format == 12:  # SMP (U+10000 - U+10FFFF)
                 table.cmap[codepoint] = name
 
+    def _outline_fits_int16(self, x_min, x_max, y_min, y_max):
+        """Returns True when a mono glyph's outline is representable in the sfnt.
+
+        glyf/CFF store point coordinates - and glyf stores the point-to-point deltas -
+        as int16, so an outline that runs past the int16 range, or spans more than the
+        int16 width in one axis, cannot be encoded at all (no amount of coordinate
+        saturation helps: clamping the far edge in still leaves a single delta larger
+        than int16). The real trigger is a pack cell hundreds of pixels wide reaching
+        the mono path when --color-glyphs coerces the whole build to TrueType - a 320px
+        default-font cell scales to 40960 units, well past 32767. Every normal glyph
+        sits far inside int16, so a build that already compiled never trips this."""
+        return (INT16_MIN <= x_min and x_max <= INT16_MAX
+                and INT16_MIN <= y_min and y_max <= INT16_MAX
+                and (x_max - x_min) <= INT16_MAX and (y_max - y_min) <= INT16_MAX)
+
     def add(self, glyph: Glyph):
         """Adds a drawn glyph to storage with its advance width, LSB, and cmap mappings."""
         if glyph.is_raster:
@@ -87,9 +102,19 @@ class GlyphStorage:
         all_contours = list(glyph.outer_scaled) + list(glyph.holes_scaled)
         if all_contours:
             all_points = [pt for contour in all_contours for pt in contour]
+            x_min = min(x for x, y in all_points)
             x_max = max(x for x, y in all_points)
             y_max = max(y for x, y in all_points)
             y_min = min(y for x, y in all_points)
+
+            # An outline past the int16 range cannot be written to glyf/CFF and would
+            # abort the whole save. Drop it from the mono fallback (its faithful art
+            # still ships in the colour font when --color-glyphs is on) rather than
+            # crash the build; nothing is dropped from a build that already compiled.
+            if not self._outline_fits_int16(x_min, x_max, y_min, y_max):
+                log(f" → ⚠️ Skipping U+{glyph.codepoint:04X} in the mono font: outline "
+                    f"{ceil(x_max - x_min)}x{ceil(y_max - y_min)} units exceeds the int16 range")
+                return
 
             if x_max > advance_width:
                 advance_width = ceil(x_max)
