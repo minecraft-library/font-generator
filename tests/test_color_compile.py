@@ -1,18 +1,18 @@
-"""M6: single-file colour compilation. One merged sbix TrueType per pack, stored
+"""M6: per-pack colour compilation. One merged sbix TrueType per source pack, stored
 codepoints allocated over the (font_id, original_codepoint) pairs, pack-wide content
-dedup, and the single-Regular emission that never touches the mono four-style
-fan-out."""
+dedup, and the Regular-only colour emission that rides the shared create_font_files
+loop without the mono four-style fan-out."""
 import os
 
 import pytest
 from fontTools.ttLib import TTFont
 
-from helpers import color_cell, flat_two_color_cell, make_raster_tile
+from helpers import build_one_color_font, color_cell, flat_two_color_cell, make_raster_tile
 from minecraft_fontgen.config import OUTPUT_FONT_NAME, STORED_CP_START
 from minecraft_fontgen.file_io import build_color_glyph_map, group_color_space_rows
-from minecraft_fontgen.font_creator import create_color_font_files
+from minecraft_fontgen.font_creator import create_font_files
 
-MERGED_NAME = f"{OUTPUT_FONT_NAME}-Color.ttf"
+MERGED_NAME = f"{OUTPUT_FONT_NAME}-Testpack.ttf"
 
 
 @pytest.fixture(autouse=True)
@@ -87,7 +87,7 @@ def test_group_color_space_rows():
 
 
 # ---------------------------------------------------------------------------
-# create_color_font_files (single merged file)
+# per-pack colour font (one merged file per source pack)
 # ---------------------------------------------------------------------------
 
 def _distinct_cell(seed):
@@ -105,10 +105,13 @@ def _one_font_map(font_id, *codepoints):
     return build_color_glyph_map(_providers(*tiles))
 
 
-def test_empty_map_emits_nothing(tmp_path):
-    color_file, storage = create_color_font_files({}, {}, str(tmp_path), OUTPUT_FONT_NAME)
-    assert color_file is None
-    assert storage is None
+def test_no_color_fonts_emits_nothing(tmp_path):
+    # An art-free pack contributes no colour spec (collect_color_fonts drops it), so
+    # create_font_files with no colour fonts and no mono styles writes nothing.
+    files, color_results = create_font_files(
+        {}, False, [], str(tmp_path), OUTPUT_FONT_NAME, "ttf", color_fonts=[])
+    assert files == []
+    assert color_results == []
     assert os.listdir(tmp_path) == []
 
 
@@ -122,7 +125,7 @@ def test_single_merged_file_carries_all_font_ids(tmp_path):
         make_raster_tile(0xE000, art_b, 8, 7, font_id="packB:icons"),
     ))
 
-    color_file, storage = create_color_font_files(color_map, {}, str(tmp_path), OUTPUT_FONT_NAME)
+    color_file, storage = build_one_color_font(color_map, {}, str(tmp_path), OUTPUT_FONT_NAME)
 
     assert os.path.basename(color_file) == MERGED_NAME
     assert [f for f in os.listdir(tmp_path) if f.endswith(".ttf")] == [MERGED_NAME]
@@ -151,7 +154,7 @@ def test_stored_codepoints_assigned_in_sorted_pair_order(tmp_path):
     color_map.update(_one_font_map("wy:b", 0xE000))
     color_map.update(_one_font_map("wy:a", 0xE001, 0xE000))
 
-    _, storage = create_color_font_files(color_map, {}, str(tmp_path), OUTPUT_FONT_NAME)
+    _, storage = build_one_color_font(color_map, {}, str(tmp_path), OUTPUT_FONT_NAME)
     rows = _rows_by_pair(storage)
 
     assert rows[("wy:a", 0xE000)]["stored_codepoint"] == STORED_CP_START
@@ -162,7 +165,7 @@ def test_stored_codepoints_assigned_in_sorted_pair_order(tmp_path):
 def test_color_mode_regular_only(tmp_path):
     # One pack yields exactly one file (no bold/italic/alternate fan-out).
     color_map = _one_font_map("wy:a", 0xE000, 0xE001)
-    color_file, storage = create_color_font_files(color_map, {}, str(tmp_path), OUTPUT_FONT_NAME)
+    color_file, storage = build_one_color_font(color_map, {}, str(tmp_path), OUTPUT_FONT_NAME)
     assert color_file is not None
     assert storage is not None
     ttfs = [f for f in os.listdir(tmp_path) if f.endswith(".ttf")]
@@ -175,7 +178,7 @@ def test_gid_ceiling_scoped(tmp_path):
     color_map = {}
     color_map.update(_one_font_map("wy:a", 0xE000, 0xE001, 0xE002))
     color_map.update(_one_font_map("wy:b", 0xE009))  # distinct seed -> distinct art
-    color_file, _ = create_color_font_files(color_map, {}, str(tmp_path), OUTPUT_FONT_NAME)
+    color_file, _ = build_one_color_font(color_map, {}, str(tmp_path), OUTPUT_FONT_NAME)
     font = TTFont(color_file)
     # 4 distinct raster glyphs + .notdef
     assert font["maxp"].numGlyphs == 5
@@ -190,7 +193,7 @@ def test_cross_font_id_dedup_shares_one_gid(tmp_path):
         make_raster_tile(0xE000, same, 8, 7, font_id="wy:a"),
         make_raster_tile(0xE000, flat_two_color_cell(8, 8), 8, 7, font_id="wy:b"),
     ))
-    color_file, storage = create_color_font_files(color_map, {}, str(tmp_path), OUTPUT_FONT_NAME)
+    color_file, storage = build_one_color_font(color_map, {}, str(tmp_path), OUTPUT_FONT_NAME)
     rows = _rows_by_pair(storage)
 
     row_a = rows[("wy:a", 0xE000)]
@@ -212,7 +215,7 @@ def test_cross_font_id_dedup_shares_one_gid(tmp_path):
 def test_space_only_pack_no_file_but_keeps_rows(tmp_path):
     # A pack with only space advances mints no glyph and no .ttf, but its storage
     # still carries the sidecar rows so they are not lost.
-    color_file, storage = create_color_font_files(
+    color_file, storage = build_one_color_font(
         {}, {"wy:spacing": [(0xE100, -16384)]}, str(tmp_path), OUTPUT_FONT_NAME)
     assert color_file is None
     assert storage is not None
@@ -225,7 +228,7 @@ def test_space_only_pack_no_file_but_keeps_rows(tmp_path):
 def test_space_rows_ride_in_the_merged_storage(tmp_path):
     # Space rows ride in the single storage beside the raster art; they mint no glyph.
     color_map = _one_font_map("wy:a", 0xE000)
-    color_file, storage = create_color_font_files(
+    color_file, storage = build_one_color_font(
         color_map, {"wy:a": [(0xE100, -8.0)]}, str(tmp_path), OUTPUT_FONT_NAME)
     assert color_file is not None
     codepoints = {r["codepoint"] for r in storage.sidecar_rows}
@@ -236,7 +239,7 @@ def test_space_rows_ride_in_the_merged_storage(tmp_path):
     assert space_row["glyphName"] is None
 
 
-def test_create_color_font_files_deterministic(tmp_path):
+def test_per_pack_color_font_deterministic(tmp_path):
     dir_a = tmp_path / "a"
     dir_b = tmp_path / "b"
     dir_a.mkdir()
@@ -246,7 +249,7 @@ def test_create_color_font_files_deterministic(tmp_path):
         color_map = {}
         color_map.update(_one_font_map("wy:b", 0xE000))
         color_map.update(_one_font_map("wy:a", 0xE000, 0xE001))
-        path, _ = create_color_font_files(color_map, {}, str(outdir), OUTPUT_FONT_NAME)
+        path, _ = build_one_color_font(color_map, {}, str(outdir), OUTPUT_FONT_NAME)
         with open(path, "rb") as f:
             return f.read()
 

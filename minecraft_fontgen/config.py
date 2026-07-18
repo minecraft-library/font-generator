@@ -159,7 +159,6 @@ SBIX_INT16_MIN = -0x8000  # clamp floor for int16 sbix/head fields (originOffset
 SBIX_INT16_MAX = 0x7FFF  # clamp ceiling for int16 sbix/head fields
 SBIX_UINT16_MAX = 0xFFFF  # clamp ceiling for uint16 fields (usWin metrics, char indices)
 COLOR_SIDECAR_NAME = "colour-glyphs.json"  # versioned sidecar filename suffix (per pack: Minecraft-<Namespace>.colour-glyphs.json)
-COLOR_OUTPUT_INFIX = "Color"  # infix in the single per-pack colour output filename (Minecraft-Color.ttf)
 VANILLA_PACK_ID = "vanilla"  # identity of the vanilla/mono source: the mono product is just another identified source
 # Stored-codepoint plane window. Every (font_id, original_codepoint) raster pair is
 # assigned a synthetic STORED codepoint from this range so a single merged font can

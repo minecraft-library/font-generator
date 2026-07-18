@@ -53,6 +53,10 @@ class FakeSource:
         self.is_vanilla = vanilla
         self.closed = False
 
+    @property
+    def pack_id(self):
+        return self.name
+
     def get_font_json(self, font_id):
         return self.fonts.get(font_id)
 
@@ -108,47 +112,50 @@ def make_raster_tile(codepoint, cell, display_height, ascent, font_id="test:demo
     }
 
 
+def color_font_spec(color_map, space_rows=None, namespace="Testpack", pack_id="testpack"):
+    """Builds one colour font spec shaped exactly as file_io.collect_color_fonts emits,
+    for create_font_files to consume alongside (or instead of) the mono styles."""
+    return {
+        "name": namespace,
+        "enabled": True,
+        "color": True,
+        "bold": False,
+        "italic": False,
+        "pack_id": pack_id,
+        "family_qualifier": namespace,
+        "color_map": color_map,
+        "space_rows": space_rows or {},
+    }
+
+
+def build_one_color_font(color_map, space_rows, outdir, font_name="Minecraft",
+                         namespace="Testpack"):
+    """Compiles a single pack's merged colour font through the real create_font_files
+    loop (no mono styles) and returns (color_file, storage). This is the shared path
+    the colour-compile tests drive, so they exercise the same code main() runs."""
+    from minecraft_fontgen.font_creator import create_font_files
+
+    spec = color_font_spec(color_map, space_rows, namespace=namespace)
+    _, color_results = create_font_files({}, False, [], str(outdir), font_name, "ttf",
+                                         color_fonts=[spec])
+    _, color_file, storage = color_results[0]
+    return color_file, storage
+
+
 def build_color_font_storage(tiles):
-    """Assembles the single merged colour TrueType font from raster tile dicts and
-    returns the finalized GlyphStorage. Mirrors create_color_font_files: every
-    (font_id, codepoint) pair is assigned a stored codepoint from plane 15/16 before
-    the tile is added, so the storage's cmap keys on stored codepoints exactly as the
-    real single-file compiler does."""
-    from fontTools.ttLib import TTFont
+    """Assembles one pack's merged colour TrueType font from raster tile dicts and
+    returns the finalized GlyphStorage. Groups the tiles into a per-font-id colour map
+    and drives the real create_font_files loop, so stored codepoints are allocated over
+    the (font_id, codepoint) pairs exactly as the production compiler does."""
+    import os
+    import tempfile
+    from collections import OrderedDict
 
-    from minecraft_fontgen.table.header import create_font_header_table
-    from minecraft_fontgen.table.horizontal_header import create_font_hheader_table
-    from minecraft_fontgen.table.maximum_profile import create_font_mprofile_table
-    from minecraft_fontgen.table.postscript import create_font_pscript_table
-    from minecraft_fontgen.table.horizontal_metrics import create_font_hmetrics_table
-    from minecraft_fontgen.table.name import create_font_name_table
-    from minecraft_fontgen.table.os2_metrics import create_font_metrics_table
-    from minecraft_fontgen.table.glyph_mappings import create_font_mapping_table
-    from minecraft_fontgen.table.truetype import create_tt_font_tables
-    from minecraft_fontgen.glyph.glyph_storage import GlyphStorage
-    from minecraft_fontgen.stored_codepoint import allocate_stored_codepoints
+    from minecraft_fontgen.file_io import build_color_glyph_map
 
-    font = TTFont()
-    create_font_header_table(font, use_cff=False)
-    create_font_hheader_table(font, use_cff=False)
-    create_font_mprofile_table(font, use_cff=False)
-    create_font_pscript_table(font, use_cff=False)
-    create_font_hmetrics_table(font)
-    create_font_name_table(font, False, False)
-    create_font_metrics_table(font)
-    create_font_mapping_table(font)
-    create_tt_font_tables(font)
-
-    stored_by_pair = allocate_stored_codepoints(
-        (tile["font_id"], tile["codepoint"]) for tile in tiles)
-
-    storage = GlyphStorage(font, use_cff=False, color_mode=True)
-    for tile in tiles:
-        tile = dict(tile)
-        tile["stored_codepoint"] = stored_by_pair[(tile["font_id"], tile["codepoint"])]
-        storage.add(storage.create_glyph(tile))
-    storage.add_notdef()
-    storage.finalize()
+    color_map = build_color_glyph_map([{"tiles": list(tiles)}])
+    with tempfile.TemporaryDirectory() as tmp:
+        _, storage = build_one_color_font(color_map, {}, tmp)
     return storage
 
 
@@ -178,26 +185,23 @@ def compiled_font_bytes(storage):
     return buf.getvalue()
 
 
-def make_color_png_bytes(width, height, colored_pixels):
-    """PNG bytes of a transparent RGBA canvas with {(x, y): (r, g, b, a)} painted.
-
-    Unlike make_png_bytes it splices no tEXt marker: colour cells are re-encoded
-    crops verified by pixel-equality, not byte-identity, so a synthetic marker
-    would only pollute the ancillary-chunk assertions."""
-    img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    for (x, y), rgba in colored_pixels.items():
-        img.putpixel((x, y), rgba)
+def _encode_png(img):
+    """PNG bytes of a PIL image with no spliced tEXt marker: colour cells are re-encoded
+    crops verified by pixel-equality, not byte-identity, so a synthetic marker would only
+    pollute the ancillary-chunk assertions."""
     buf = io.BytesIO()
     img.save(buf, "PNG")
     return buf.getvalue()
 
 
+def make_color_png_bytes(width, height, colored_pixels):
+    """PNG bytes of a transparent RGBA canvas with {(x, y): (r, g, b, a)} painted."""
+    return _encode_png(color_cell(width, height, colored_pixels))
+
+
 def two_color_block_png(width, height, left=(220, 40, 40, 255), right=(40, 60, 220, 255)):
     """PNG bytes of an opaque cell split into two vertical colour bands (raster icon)."""
-    return make_color_png_bytes(width, height, {
-        (x, y): (left if x < width // 2 else right)
-        for x in range(width) for y in range(height)
-    })
+    return _encode_png(flat_two_color_cell(width, height, left=left, right=right))
 
 
 def color_pack_source(font_id, cells, space_advances=None,

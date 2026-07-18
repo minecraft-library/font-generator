@@ -67,32 +67,25 @@ def _stub_pipeline(monkeypatch, calls):
         calls.append("build")
         return {}
 
-    def create_font_files(glyph_map, use_cff, output_fonts, output_dir, output_font_name, output_file_ext):
+    def create_font_files(glyph_map, use_cff, output_fonts, output_dir, output_font_name,
+                          output_file_ext, color_fonts=()):
         calls.append("create")
-        return []
+        # one colour result per collected colour pack, so the sidecar loop runs
+        results = [(spec, f"out/{output_font_name}-{spec['name']}.ttf", object())
+                   for spec in color_fonts]
+        return [], results
 
-    def collect_color_providers(stack):
+    def collect_color_fonts(stack):
         calls.append("collect_color")
-        return []
-
-    def build_color_glyph_map(providers):
-        calls.append("build_color_map")
-        return {}
-
-    def group_color_space_rows(providers):
-        return {}
-
-    def create_color_font_files(color_glyph_map, space_by_font_id, output_dir, output_font_name):
-        calls.append("create_color")
-        return "out/Minecraft-Color.ttf", object()
+        return [{"name": "Testpack"}]
 
     def build_sidecar(file, storage, epoch):
         calls.append("build_sidecar")
         return {}
 
-    def write_sidecar(sidecar, output_dir):
+    def write_sidecar(sidecar, output_dir, name=None):
         calls.append("write_sidecar")
-        return "out/colour-glyphs.json"
+        return f"out/{name}"
 
     monkeypatch.setattr(main_mod, "clean_directories", clean_directories)
     monkeypatch.setattr(main_mod, "download_minecraft_assets", download_minecraft_assets)
@@ -100,10 +93,7 @@ def _stub_pipeline(monkeypatch, calls):
     monkeypatch.setattr(main_mod, "collect_pack_providers", collect_pack_providers)
     monkeypatch.setattr(main_mod, "build_glyph_map", build_glyph_map)
     monkeypatch.setattr(main_mod, "create_font_files", create_font_files)
-    monkeypatch.setattr(main_mod, "collect_color_providers", collect_color_providers)
-    monkeypatch.setattr(main_mod, "build_color_glyph_map", build_color_glyph_map)
-    monkeypatch.setattr(main_mod, "group_color_space_rows", group_color_space_rows)
-    monkeypatch.setattr(main_mod, "create_color_font_files", create_color_font_files)
+    monkeypatch.setattr(main_mod, "collect_color_fonts", collect_color_fonts)
     monkeypatch.setattr(main_mod, "build_sidecar", build_sidecar)
     monkeypatch.setattr(main_mod, "write_sidecar", write_sidecar)
 
@@ -182,12 +172,11 @@ def test_main_dispatches_color_after_build(monkeypatch):
 
     main_mod.main()
 
-    # colour is ingested after the pack providers and the mono build; the colour
-    # compile + sidecar run strictly after the mono create; mono still runs.
+    # colour is collected after the pack providers; the fonts are built in the shared
+    # create loop, and each pack's sidecar is written strictly after it.
     assert "create" in calls
     assert calls.index("collect_color") > calls.index("collect")
-    assert calls.index("create_color") > calls.index("create")
-    assert calls.index("build_sidecar") > calls.index("create_color")
+    assert calls.index("build_sidecar") > calls.index("create")
     assert calls.index("write_sidecar") > calls.index("build_sidecar")
     # the flag was mirrored onto the module config the ingestion helpers read
     assert config.COLOR_GLYPHS is True
@@ -206,7 +195,7 @@ def test_color_off_skips_color_and_keeps_mono(monkeypatch):
 
     # colour off: none of the colour collaborators run, the mono create still does
     assert "create" in calls
-    for colour_call in ("collect_color", "create_color", "build_sidecar", "write_sidecar"):
+    for colour_call in ("collect_color", "build_sidecar", "write_sidecar"):
         assert colour_call not in calls
     assert config.COLOR_GLYPHS is False
 

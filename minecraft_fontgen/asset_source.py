@@ -214,7 +214,7 @@ class AssetStack:
 
     def color_font_layers(self):
         """Enumerates every font file every resource pack ships, for the colour
-        raster track. Yields (pack_name, font_id, raw_json) tuples with pack order
+        raster track. Yields (pack_id, font_id, raw_json) tuples with pack order
         preserved, each pack's font ids sorted and deduped, and vanilla excluded
         (it carries no colour cells). A grammar-invalid font id logs and skips
         rather than raising, so one malformed name never aborts the enumeration.
@@ -225,11 +225,11 @@ class AssetStack:
                 try:
                     raw = source.get_font_json(font_id)
                 except ValueError as error:
-                    log(f" → ⚠️ Skipping font '{font_id}' in pack '{source.name}': {error}")
+                    log(f" → ⚠️ Skipping font '{font_id}' in pack '{source.pack_id}': {error}")
                     continue
                 if raw is None:
                     continue
-                layers.append((source.name, font_id, raw))
+                layers.append((source.pack_id, font_id, raw))
         return layers
 
     def materialize_texture(self, ref):

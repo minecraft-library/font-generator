@@ -158,6 +158,63 @@ def group_color_space_rows(providers):
             space_rows[provider.get("font_id")].append((codepoint, advance))
     return dict(space_rows)
 
+def color_font_namespace(pack_id):
+    """Derives the capitalized, filesystem-safe namespace for a pack's colour output
+    from its pack id (e.g. 'mypack' -> 'Mypack'), so the merged font lands at
+    Minecraft-<Namespace>.ttf. Only the first character is upper-cased; internal
+    capitals are preserved."""
+    safe = sanitize_fs_name(pack_id)
+    return safe[:1].upper() + safe[1:]
+
+def collect_color_fonts(stack):
+    """Composes the per-source-pack colour fonts, mirroring how collect_pack_providers
+    composes the mono pack providers: one entry per pack that ships colour art.
+
+    Returns [] when the colour track is off. Otherwise it ingests every pack's colour
+    cells and space advances, partitions them by source pack (each pack becomes its
+    own merged sbix font, not one font for the whole run), and returns a list of
+    colour font specs consumed by create_font_files alongside the mono styles. Each
+    spec carries the pack's identity (pack_id), its capitalized output namespace
+    (family_qualifier / Minecraft-<Namespace>.ttf), and the pack's colour glyph map
+    and space rows. Packs whose colour font ids yield no raster art and no space rows
+    are dropped. Namespaces that collide after sanitization are disambiguated with a
+    numeric suffix so N packs always yield N distinct files."""
+    if not config.COLOR_GLYPHS:
+        return []
+
+    providers = collect_color_providers(stack)
+
+    # Partition by source pack (the provider's layer is its pack id). Stack order is
+    # preserved, so the pack sequence is deterministic.
+    by_pack = OrderedDict()
+    for provider in providers:
+        by_pack.setdefault(provider.get("layer"), []).append(provider)
+
+    color_fonts = []
+    used_namespaces = {}
+    for pack_id, pack_providers in by_pack.items():
+        color_map = build_color_glyph_map(pack_providers)
+        space_rows = group_color_space_rows(pack_providers)
+        if not color_map and not space_rows:
+            continue
+
+        base = color_font_namespace(pack_id)
+        used_namespaces[base] = used_namespaces.get(base, 0) + 1
+        namespace = base if used_namespaces[base] == 1 else f"{base}{used_namespaces[base]}"
+
+        color_fonts.append({
+            "name": namespace,
+            "enabled": True,
+            "color": True,
+            "bold": False,
+            "italic": False,
+            "pack_id": pack_id,
+            "family_qualifier": namespace,
+            "color_map": color_map,
+            "space_rows": space_rows,
+        })
+    return color_fonts
+
 def parse_bin_providers(byte_data):
     """Parses legacy binary glyph_sizes.bin format (Minecraft 1.8.9 and earlier).
 

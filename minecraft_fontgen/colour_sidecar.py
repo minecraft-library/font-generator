@@ -16,11 +16,19 @@ import json
 import os
 
 from minecraft_fontgen.config import (
-    UNITS_PER_EM, VERSION, SBIX_GRAPHIC_TYPE, COLOR_SIDECAR_NAME,
+    UNITS_PER_EM, VERSION, SBIX_GRAPHIC_TYPE, COLOR_SIDECAR_NAME, OUTPUT_FONT_NAME,
 )
 from minecraft_fontgen.functions import log
 
 SCHEMA_VERSION = 2
+
+
+def sidecar_name(namespace):
+    """The per-pack sidecar filename for a colour font namespace, paired with the
+    pack's Minecraft-<Namespace>.ttf: e.g. 'Aurora' ->
+    'Minecraft-Aurora.colour-glyphs.json'. Each source pack writes its own
+    sidecar next to its own merged font."""
+    return f"{OUTPUT_FONT_NAME}-{namespace}.{COLOR_SIDECAR_NAME}"
 
 
 def build_sidecar(file, storage, source_date_epoch):

@@ -4,8 +4,10 @@ A synthetic pack (no real HD-pack assets) carries one colour font id with a mono
 letter cell, a two-colour icon, a 256px cell, and a space provider. The colour
 pass must drop the mono cell, raster the two colour cells into per-strike sbix
 PNGs that round-trip pixel-for-pixel, and emit a deterministic sidecar whose gids
-line up with the compiled glyph order. The mono OpenType product is built from the
-same pack and stays free of the raster codepoints."""
+line up with the compiled glyph order. The mono product is built from the same
+pack through the same create_font_files loop and stays free of the raster
+codepoints. The pack's own namespace names its merged font (Minecraft-Skypack.ttf)
+and sidecar."""
 import io
 import json
 import os
@@ -16,21 +18,21 @@ from fontTools.ttLib import TTFont
 
 import minecraft_fontgen.config as config
 from minecraft_fontgen.asset_source import AssetStack
-from minecraft_fontgen.colour_sidecar import build_sidecar, write_sidecar
+from minecraft_fontgen.colour_sidecar import build_sidecar, sidecar_name, write_sidecar
 from minecraft_fontgen.config import FONT_STYLES, OUTPUT_FONT_NAME
 from minecraft_fontgen.file_io import (
     build_color_glyph_map,
     build_glyph_map,
-    collect_color_providers,
+    collect_color_fonts,
     collect_pack_providers,
-    group_color_space_rows,
 )
-from minecraft_fontgen.font_creator import create_color_font_files, create_font_files
+from minecraft_fontgen.font_creator import create_font_files
 from minecraft_fontgen.functions import resolve_source_date_epoch
 
 from helpers import (
     FakeSource,
     block,
+    build_one_color_font,
     color_pack_source,
     font_json_bytes,
     make_color_png_bytes,
@@ -42,6 +44,8 @@ CP_LETTER = 0x0041      # mono 'A' cell -> stays mono, no strike
 CP_ICON = 0xE000        # two-colour icon -> raster, 8px strike
 CP_TALL = 0xE001        # 256px cell -> raster, its own strike
 CP_SPACE = 0xE100       # space provider advance -> sidecar-only
+
+MERGED_NAME = f"{OUTPUT_FONT_NAME}-Skypack.ttf"
 
 
 def _solid_png(size, rgba):
@@ -83,9 +87,15 @@ def _decode_strike(font, name):
 
 
 def _row_for(storage, codepoint, font_id="sky:icons"):
-    """The single storage's sidecar row for an original (font_id, codepoint) pair."""
+    """The colour storage's sidecar row for an original (font_id, codepoint) pair."""
     return next(r for r in storage.sidecar_rows
                 if r["codepoint"] == codepoint and r["font_id"] == font_id)
+
+
+def _sole_color(color_results):
+    """Unwraps the single (spec, file, storage) triple the demo pack produces."""
+    assert len(color_results) == 1
+    return color_results[0]
 
 
 def test_color_end_to_end(monkeypatch):
@@ -96,28 +106,32 @@ def test_color_end_to_end(monkeypatch):
     pack = _demo_pack()
     stack = AssetStack([FakeSource("vanilla", vanilla=True), pack])
 
-    # --- mono product (unchanged, additive): the letters build, no raster leaks ---
+    # colour is collected in the file_io layer, per source pack, beside the mono providers
     mono_providers = collect_pack_providers(stack)
+    color_fonts = collect_color_fonts(stack)
     glyph_map = build_glyph_map(mono_providers, None, stack)
     styles = [dict(s) for s in FONT_STYLES if s["name"] == "Regular"]
-    mono_files = create_font_files(glyph_map, True, styles, "out", OUTPUT_FONT_NAME, "otf")
+
+    # one shared loop drives the mono style and the pack's colour font
+    mono_files, color_results = create_font_files(
+        glyph_map, False, styles, "out", OUTPUT_FONT_NAME, "ttf", color_fonts=color_fonts)
+
+    # --- mono product (unchanged, additive): the letters build, no raster leaks ---
     mono = TTFont(mono_files[0])
     assert ord("Z") in mono.getBestCmap()
     assert "sbix" not in mono
     assert "COLR" not in mono
 
     # --- colour product ---
-    color_providers = collect_color_providers(stack)
-    color_map = build_color_glyph_map(color_providers)
-    space_by_font_id = group_color_space_rows(color_providers)
-
+    # the pack contributed exactly one colour font, named for its namespace
+    assert [spec["name"] for spec in color_fonts] == ["Skypack"]
     # the classifier dropped the mono letter; only the two raster cells remain
-    assert set(color_map["sky:icons"]) == {CP_ICON, CP_TALL}
+    assert set(color_fonts[0]["color_map"]["sky:icons"]) == {CP_ICON, CP_TALL}
 
-    color_file, storage = create_color_font_files(
-        color_map, space_by_font_id, "out", OUTPUT_FONT_NAME)
+    spec, color_file, storage = _sole_color(color_results)
     assert color_file is not None
-    assert os.path.basename(color_file) == f"{OUTPUT_FONT_NAME}-Color.ttf"
+    assert os.path.basename(color_file) == MERGED_NAME
+    assert spec["pack_id"] == "skypack"
 
     font = TTFont(color_file)
     assert "sbix" in font
@@ -137,11 +151,12 @@ def test_color_end_to_end(monkeypatch):
         np.array(_decode_strike(font, cmap[stored_tall])),
         np.array(Image.open(io.BytesIO(_solid_png(256, (30, 200, 90, 255)))).convert("RGBA")))
 
-    # --- sidecar ---
+    # --- sidecar (one per pack, naming its own merged font file) ---
     sidecar = build_sidecar(os.path.basename(color_file), storage, resolve_source_date_epoch())
-    write_sidecar(sidecar, "out")
+    sidecar_path = write_sidecar(sidecar, "out", name=sidecar_name(spec["name"]))
+    assert os.path.basename(sidecar_path) == f"{OUTPUT_FONT_NAME}-Skypack.colour-glyphs.json"
 
-    assert sidecar["file"] == f"{OUTPUT_FONT_NAME}-Color.ttf"
+    assert sidecar["file"] == MERGED_NAME
     by_cp = {g["codepoint"]: g for g in sidecar["glyphs"]}
     assert set(by_cp) == {CP_ICON, CP_TALL, CP_SPACE}
     # space row: no glyph, signed advance carried verbatim
@@ -155,7 +170,7 @@ def test_color_end_to_end(monkeypatch):
         assert order[by_cp[cp]["gid"]] == cmap[by_cp[cp]["stored_codepoint"]]
 
     # sidecar on disk parses back to the same object
-    with open("out/colour-glyphs.json", encoding="utf-8") as f:
+    with open(sidecar_path, encoding="utf-8") as f:
         assert json.load(f) == sidecar
 
 
@@ -166,10 +181,10 @@ def test_color_end_to_end_deterministic(monkeypatch):
     def _build(outdir):
         os.makedirs(outdir, exist_ok=True)
         stack = AssetStack([FakeSource("vanilla", vanilla=True), _demo_pack()])
-        color_providers = collect_color_providers(stack)
-        color_map = build_color_glyph_map(color_providers)
-        space = group_color_space_rows(color_providers)
-        color_file, storage = create_color_font_files(color_map, space, outdir, OUTPUT_FONT_NAME)
+        color_fonts = collect_color_fonts(stack)
+        _, color_results = create_font_files(
+            {}, False, [], outdir, OUTPUT_FONT_NAME, "ttf", color_fonts=color_fonts)
+        spec, color_file, storage = _sole_color(color_results)
         sidecar = build_sidecar(os.path.basename(color_file), storage, resolve_source_date_epoch())
         with open(color_file, "rb") as f:
             return f.read(), json.dumps(sidecar, ensure_ascii=False, indent=2)
@@ -183,7 +198,8 @@ def test_color_end_to_end_deterministic(monkeypatch):
 def test_color_off_output_byte_identical(monkeypatch):
     # The central additive-track guarantee: running the colour pass must not perturb
     # the mono product one byte. Same synthetic pack, same fixed epoch, same mono
-    # TTF - the only difference is whether the colour ingestion runs alongside it.
+    # TTF - the only difference is whether the colour font is compiled alongside it in
+    # the shared loop.
     monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
 
     def build_mono(color_on, outdir):
@@ -191,13 +207,11 @@ def test_color_off_output_byte_identical(monkeypatch):
         os.makedirs(outdir, exist_ok=True)
         stack = AssetStack([FakeSource("vanilla", vanilla=True), _demo_pack()])
         mono_providers = collect_pack_providers(stack)
-        if color_on:
-            # the colour ingestion runs in the same phase as the mono parse/slice;
-            # its side effects must not leak into the mono compilation
-            collect_color_providers(stack)
+        color_fonts = collect_color_fonts(stack) if color_on else []
         glyph_map = build_glyph_map(mono_providers, None, stack)
         styles = [dict(s) for s in FONT_STYLES if s["name"] == "Regular"]
-        files = create_font_files(glyph_map, False, styles, outdir, OUTPUT_FONT_NAME, "ttf")
+        files, _ = create_font_files(
+            glyph_map, False, styles, outdir, OUTPUT_FONT_NAME, "ttf", color_fonts=color_fonts)
         with open(files[0], "rb") as f:
             return f.read()
 
@@ -211,7 +225,7 @@ def test_colr_not_emitted(tmp_path):
         make_raster_tile(CP_ICON, Image.open(io.BytesIO(two_color_block_png(8, 8))).convert("RGBA"),
                          8, 7, font_id="sky:icons"),
     ]}])
-    color_file, _ = create_color_font_files(color_map, {}, str(tmp_path), OUTPUT_FONT_NAME)
+    color_file, _ = build_one_color_font(color_map, {}, str(tmp_path))
     font = TTFont(color_file)
     for banned in ("COLR", "CPAL", "CBDT", "CBLC"):
         assert banned not in font

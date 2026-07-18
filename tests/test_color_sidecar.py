@@ -136,11 +136,12 @@ def test_write_sidecar_fails_loud(tmp_path):
 
 def test_sidecar_file_none_for_space_only_pack():
     # A space-only pack writes no .ttf; the sidecar records file=None but keeps rows.
-    from minecraft_fontgen.font_creator import create_color_font_files
+    from helpers import build_one_color_font
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmp:
-        _, storage = create_color_font_files({}, {"wy:s": [(0xE100, -16384)]}, tmp, "Minecraft")
+        color_file, storage = build_one_color_font({}, {"wy:s": [(0xE100, -16384)]}, tmp)
+    assert color_file is None
     sidecar = build_sidecar(None, storage, 1700000000)
     assert sidecar["file"] is None
     assert [g["codepoint"] for g in sidecar["glyphs"]] == [0xE100]

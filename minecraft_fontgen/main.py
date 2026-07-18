@@ -8,10 +8,10 @@ from minecraft_fontgen.cli import parse_args
 from minecraft_fontgen.piston import download_minecraft_assets
 from minecraft_fontgen.file_io import (
     clean_directories, collect_pack_providers, parse_provider_file, build_glyph_map,
-    collect_color_providers, build_color_glyph_map, group_color_space_rows,
+    collect_color_fonts,
 )
-from minecraft_fontgen.font_creator import create_font_files, create_color_font_files
-from minecraft_fontgen.colour_sidecar import build_sidecar, write_sidecar
+from minecraft_fontgen.font_creator import create_font_files
+from minecraft_fontgen.colour_sidecar import build_sidecar, write_sidecar, sidecar_name
 from minecraft_fontgen.config import OUTPUT_FONT_NAME
 from minecraft_fontgen.functions import set_silent, log, validate_fonts, resolve_source_date_epoch
 from minecraft_fontgen.preview_font import write_preview_image, write_render_image
@@ -46,7 +46,7 @@ def main():
 
     # Layer user resource packs above the vanilla extraction (later packs win)
     stack = AssetStack([VanillaSource()] + pack_sources)
-    color_providers = []
+    color_fonts = []
     try:
         # Clean work and output directories
         clean_directories(opts.output_dir)
@@ -60,30 +60,31 @@ def main():
         # Append pack providers after vanilla so they win the last-wins merge
         providers += collect_pack_providers(stack)
 
-        # Colour is a second, additive track: ingest every pack font file's colour
-        # cells and space advances (a no-op that returns [] when the flag is off).
+        # Colour is a second, additive track: compose one colour font spec per source
+        # pack (a no-op that returns [] when the flag is off), collected in the same
+        # file_io layer as the mono pack providers.
         if opts.color_glyphs:
-            color_providers = collect_color_providers(stack)
+            color_fonts = collect_color_fonts(stack)
 
         # Build unified glyph map with pre-computed scaling
         glyph_map = build_glyph_map(providers, unifont_glyphs, stack, inset_vertices=opts.inset_vertices)
     finally:
         stack.close()
 
-    # Generate all font files (the mono product is emitted unchanged whether or not
-    # colour is on: the classifier removed raster codepoints from the mono map).
-    font_files = create_font_files(glyph_map, opts.use_cff, opts.output_fonts, opts.output_dir, OUTPUT_FONT_NAME, opts.output_ext)
+    # Generate all font files through the shared loop: the mono styles plus one merged
+    # sbix TrueType per colour pack. The mono product is emitted unchanged whether or
+    # not colour is on (the classifier removed raster codepoints from the mono map).
+    font_files, color_results = create_font_files(
+        glyph_map, opts.use_cff, opts.output_fonts, opts.output_dir,
+        OUTPUT_FONT_NAME, opts.output_ext, color_fonts=color_fonts)
 
-    # Additive colour pass: one merged sbix TrueType for the whole pack plus the sidecar.
-    if opts.color_glyphs:
-        color_glyph_map = build_color_glyph_map(color_providers)
-        space_by_font_id = group_color_space_rows(color_providers)
-        color_file, color_storage = create_color_font_files(
-            color_glyph_map, space_by_font_id, opts.output_dir, OUTPUT_FONT_NAME)
-        if color_storage is not None:
-            file_ref = os.path.basename(color_file) if color_file else None
-            sidecar = build_sidecar(file_ref, color_storage, resolve_source_date_epoch())
-            write_sidecar(sidecar, opts.output_dir)
+    # Each colour pack writes its own sidecar naming its own merged font file.
+    for spec, color_file, color_storage in color_results:
+        if color_storage is None:
+            continue
+        file_ref = os.path.basename(color_file) if color_file else None
+        sidecar = build_sidecar(file_ref, color_storage, resolve_source_date_epoch())
+        write_sidecar(sidecar, opts.output_dir, name=sidecar_name(spec["name"]))
 
     if opts.validate and font_files:
         # Validate with FontForge (development only: --validate or MCFONT_VALIDATE=1)
