@@ -2,7 +2,6 @@ import os
 import sys
 import io
 
-import minecraft_fontgen.config as config
 from minecraft_fontgen.asset_source import AssetStack, VanillaSource, open_resource_pack
 from minecraft_fontgen.cli import parse_args
 from minecraft_fontgen.piston import download_minecraft_assets
@@ -38,9 +37,6 @@ def main():
     """Runs the font generation pipeline: download, parse, build glyph map, create fonts."""
     opts = parse_args()
     set_silent(opts.silent)
-    # The colour track is gated on this module-level flag, which the ingestion
-    # helpers read at runtime; mirror the resolved CLI/env option onto it.
-    config.COLOR_GLYPHS = opts.color_glyphs
 
     pack_sources = open_resource_packs(opts.resource_packs)
 
@@ -58,13 +54,13 @@ def main():
         providers = parse_provider_file(matched_file, matched_format, stack)
 
         # Append pack providers after vanilla so they win the last-wins merge
-        providers += collect_pack_providers(stack)
+        providers += collect_pack_providers(stack, opts.color_glyphs)
 
         # Colour is a second, additive track: compose one colour font spec per source
         # pack (a no-op that returns [] when the flag is off), collected in the same
         # file_io layer as the mono pack providers.
         if opts.color_glyphs:
-            color_fonts = collect_color_fonts(stack)
+            color_fonts = collect_color_fonts(stack, opts.color_glyphs)
 
         # Build unified glyph map with pre-computed scaling
         glyph_map = build_glyph_map(providers, unifont_glyphs, stack, inset_vertices=opts.inset_vertices)

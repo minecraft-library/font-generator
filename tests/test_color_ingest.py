@@ -108,13 +108,11 @@ def test_list_font_ids_collected_not_warnskipped(capsys, monkeypatch):
     stack = AssetStack([FakeSource("vanilla", vanilla=True), pack])
 
     # mono mode still warns that the tool does not build this font id
-    monkeypatch.setattr(config, "COLOR_GLYPHS", False)
-    collect_pack_providers(stack)
+    collect_pack_providers(stack, color_glyphs=False)
     assert "does not build" in capsys.readouterr().out
 
     # colour mode ingests it independently, so the warning is silenced
-    monkeypatch.setattr(config, "COLOR_GLYPHS", True)
-    collect_pack_providers(stack)
+    collect_pack_providers(stack, color_glyphs=True)
     assert "does not build" not in capsys.readouterr().out
 
 
@@ -206,13 +204,12 @@ def test_space_provider_empty_returns_none():
     assert parse_space_provider({"type": "space", "advances": {"AB": 1}}, "wy", "wy:x") is None
 
 
-def test_space_only_file_emits_no_tiles(monkeypatch):
-    monkeypatch.setattr(config, "COLOR_GLYPHS", True)
+def test_space_only_file_emits_no_tiles():
     space_json = font_json_bytes([{"type": "space", "advances": {chr(0xE010): -8.0}}])
     pack = FakeSource("wy", fonts={"wy:spacing": space_json})
     stack = AssetStack([pack])
 
-    providers = collect_color_providers(stack)
+    providers = collect_color_providers(stack, color_glyphs=True)
 
     # the space record is captured but nothing gets sliced into tiles
     assert len(providers) == 1
@@ -313,7 +310,6 @@ def test_truncated_texture_decodes_not_fatal(tmp_path):
 
 def test_corrupt_texture_warnskips_not_fatal(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(config, "SILENT_LOG", False)
-    monkeypatch.setattr(config, "COLOR_GLYPHS", True)
     files = {
         "pack.mcmeta": b'{"pack": {"pack_format": 88}}',
         "assets/wy/font/icons.json": font_json_bytes([
@@ -326,7 +322,7 @@ def test_corrupt_texture_warnskips_not_fatal(tmp_path, capsys, monkeypatch):
     stack = AssetStack([source])
 
     # a single undecodable texture must warn-skip, never abort the whole colour pass
-    providers = collect_color_providers(stack)
+    providers = collect_color_providers(stack, color_glyphs=True)
     tiles = [t for p in providers for t in p.get("tiles", [])]
     assert tiles == []
     assert "failed to decode" in capsys.readouterr().out

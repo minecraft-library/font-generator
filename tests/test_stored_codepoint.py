@@ -7,7 +7,7 @@ from fontTools.ttLib import TTFont
 
 from helpers import build_color_font_storage, compiled_font_bytes, flat_two_color_cell, make_raster_tile
 from minecraft_fontgen.config import STORED_CP_START, STORED_CP_END
-from minecraft_fontgen.stored_codepoint import (
+from minecraft_fontgen.functions import (
     allocate_stored_codepoints, plane_budget, _is_noncharacter,
 )
 

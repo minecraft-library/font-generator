@@ -6,7 +6,6 @@ import os
 import pytest
 from fontTools.ttLib import TTFont
 
-import minecraft_fontgen.config as config
 from minecraft_fontgen.asset_source import AssetStack
 from minecraft_fontgen.colour_sidecar import build_sidecar, sidecar_name, write_sidecar
 from minecraft_fontgen.config import FONT_STYLES, OUTPUT_FONT_NAME, VANILLA_PACK_ID
@@ -20,7 +19,6 @@ from helpers import FakeSource, color_pack_source, two_color_block_png
 @pytest.fixture(autouse=True)
 def _fixed_epoch(monkeypatch):
     monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
-    monkeypatch.setattr(config, "COLOR_GLYPHS", True)
 
 
 def _raster_pack(name, font_id, codepoint=0xE000):
@@ -49,7 +47,7 @@ def test_collect_color_fonts_one_spec_per_pack():
         _raster_pack("aurora", "wy:icons"),
         _raster_pack("seaside", "mcc:icons"),
     ])
-    specs = collect_color_fonts(stack)
+    specs = collect_color_fonts(stack, color_glyphs=True)
 
     assert [s["name"] for s in specs] == ["Aurora", "Seaside"]
     assert [s["pack_id"] for s in specs] == ["aurora", "seaside"]
@@ -65,14 +63,13 @@ def test_collect_color_fonts_drops_art_free_pack():
     empty = FakeSource("emptypack", fonts={"e:mono": font_json_bytes([])})
     stack = AssetStack([FakeSource("vanilla", vanilla=True), empty,
                         _raster_pack("aurora", "wy:icons")])
-    specs = collect_color_fonts(stack)
+    specs = collect_color_fonts(stack, color_glyphs=True)
     assert [s["name"] for s in specs] == ["Aurora"]
 
 
-def test_collect_color_fonts_off_returns_empty(monkeypatch):
-    monkeypatch.setattr(config, "COLOR_GLYPHS", False)
+def test_collect_color_fonts_off_returns_empty():
     stack = AssetStack([FakeSource("vanilla", vanilla=True), _raster_pack("aurora", "wy:icons")])
-    assert collect_color_fonts(stack) == []
+    assert collect_color_fonts(stack, color_glyphs=False) == []
 
 
 def test_collision_disambiguated_with_suffix():
@@ -82,7 +79,7 @@ def test_collision_disambiguated_with_suffix():
         _raster_pack("aurora", "a:icons"),
         _raster_pack("Aurora", "b:icons"),
     ])
-    specs = collect_color_fonts(stack)
+    specs = collect_color_fonts(stack, color_glyphs=True)
     assert [s["pack_id"] for s in specs] == ["aurora", "Aurora"]
     assert [s["name"] for s in specs] == ["Aurora", "Aurora2"]
 
@@ -97,7 +94,7 @@ def test_n_packs_emit_n_fonts_and_sidecars(tmp_path):
         _raster_pack("aurora", "wy:icons"),
         _raster_pack("seaside", "mcc:icons"),
     ])
-    color_fonts = collect_color_fonts(stack)
+    color_fonts = collect_color_fonts(stack, color_glyphs=True)
 
     _, color_results = create_font_files(
         {}, False, [], str(tmp_path), OUTPUT_FONT_NAME, "ttf", color_fonts=color_fonts)
@@ -126,7 +123,6 @@ def test_n_packs_emit_n_fonts_and_sidecars(tmp_path):
 def test_mono_font_stores_vanilla_pack_id(tmp_path, monkeypatch):
     # The mono styles inherit the vanilla source identity; capture the storage the
     # shared loop builds to prove the pack id is threaded onto the mono side too.
-    monkeypatch.setattr(config, "COLOR_GLYPHS", False)
     captured = []
     real_init = create_font_files.__globals__["GlyphStorage"]
 

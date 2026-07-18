@@ -59,8 +59,9 @@ def _stub_pipeline(monkeypatch, calls):
         calls.append("parse")
         return []
 
-    def collect_pack_providers(stack):
+    def collect_pack_providers(stack, color_glyphs=False):
         calls.append("collect")
+        calls.append(("collect_flag", color_glyphs))
         return []
 
     def build_glyph_map(providers, unifont_glyphs, stack, inset_vertices=True):
@@ -75,8 +76,9 @@ def _stub_pipeline(monkeypatch, calls):
                    for spec in color_fonts]
         return [], results
 
-    def collect_color_fonts(stack):
+    def collect_color_fonts(stack, color_glyphs=False):
         calls.append("collect_color")
+        calls.append(("collect_color_flag", color_glyphs))
         return [{"name": "Testpack"}]
 
     def build_sidecar(file, storage, epoch):
@@ -162,10 +164,7 @@ def test_stack_closes_when_download_fails(monkeypatch):
 
 
 def test_main_dispatches_color_after_build(monkeypatch):
-    import minecraft_fontgen.config as config
-
     calls = []
-    monkeypatch.setattr(config, "COLOR_GLYPHS", False)
     monkeypatch.setattr(main_mod, "parse_args", lambda: _opts(color_glyphs=True))
     monkeypatch.setattr(main_mod, "open_resource_pack", lambda path: FakeSource(path))
     _stub_pipeline(monkeypatch, calls)
@@ -178,15 +177,14 @@ def test_main_dispatches_color_after_build(monkeypatch):
     assert calls.index("collect_color") > calls.index("collect")
     assert calls.index("build_sidecar") > calls.index("create")
     assert calls.index("write_sidecar") > calls.index("build_sidecar")
-    # the flag was mirrored onto the module config the ingestion helpers read
-    assert config.COLOR_GLYPHS is True
+    # the resolved option is propagated as a parameter to the ingestion helpers
+    # (no module-level config global is hijacked)
+    assert ("collect_flag", True) in calls
+    assert ("collect_color_flag", True) in calls
 
 
 def test_color_off_skips_color_and_keeps_mono(monkeypatch):
-    import minecraft_fontgen.config as config
-
     calls = []
-    monkeypatch.setattr(config, "COLOR_GLYPHS", False)
     monkeypatch.setattr(main_mod, "parse_args", lambda: _opts(color_glyphs=False))
     monkeypatch.setattr(main_mod, "open_resource_pack", lambda path: FakeSource(path))
     _stub_pipeline(monkeypatch, calls)
@@ -197,7 +195,8 @@ def test_color_off_skips_color_and_keeps_mono(monkeypatch):
     assert "create" in calls
     for colour_call in ("collect_color", "build_sidecar", "write_sidecar"):
         assert colour_call not in calls
-    assert config.COLOR_GLYPHS is False
+    # the pack-provider pass still receives the resolved flag (False here)
+    assert ("collect_flag", False) in calls
 
 
 def test_second_pack_open_failure_closes_first(monkeypatch):

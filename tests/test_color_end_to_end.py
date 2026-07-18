@@ -16,7 +16,6 @@ import numpy as np
 from PIL import Image
 from fontTools.ttLib import TTFont
 
-import minecraft_fontgen.config as config
 from minecraft_fontgen.asset_source import AssetStack
 from minecraft_fontgen.colour_sidecar import build_sidecar, sidecar_name, write_sidecar
 from minecraft_fontgen.config import FONT_STYLES, OUTPUT_FONT_NAME
@@ -100,15 +99,14 @@ def _sole_color(color_results):
 
 def test_color_end_to_end(monkeypatch):
     monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
-    monkeypatch.setattr(config, "COLOR_GLYPHS", True)
     os.makedirs("out", exist_ok=True)
 
     pack = _demo_pack()
     stack = AssetStack([FakeSource("vanilla", vanilla=True), pack])
 
     # colour is collected in the file_io layer, per source pack, beside the mono providers
-    mono_providers = collect_pack_providers(stack)
-    color_fonts = collect_color_fonts(stack)
+    mono_providers = collect_pack_providers(stack, color_glyphs=True)
+    color_fonts = collect_color_fonts(stack, color_glyphs=True)
     glyph_map = build_glyph_map(mono_providers, None, stack)
     styles = [dict(s) for s in FONT_STYLES if s["name"] == "Regular"]
 
@@ -176,12 +174,11 @@ def test_color_end_to_end(monkeypatch):
 
 def test_color_end_to_end_deterministic(monkeypatch):
     monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
-    monkeypatch.setattr(config, "COLOR_GLYPHS", True)
 
     def _build(outdir):
         os.makedirs(outdir, exist_ok=True)
         stack = AssetStack([FakeSource("vanilla", vanilla=True), _demo_pack()])
-        color_fonts = collect_color_fonts(stack)
+        color_fonts = collect_color_fonts(stack, color_glyphs=True)
         _, color_results = create_font_files(
             {}, False, [], outdir, OUTPUT_FONT_NAME, "ttf", color_fonts=color_fonts)
         spec, color_file, storage = _sole_color(color_results)
@@ -203,11 +200,10 @@ def test_color_off_output_byte_identical(monkeypatch):
     monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
 
     def build_mono(color_on, outdir):
-        monkeypatch.setattr(config, "COLOR_GLYPHS", color_on)
         os.makedirs(outdir, exist_ok=True)
         stack = AssetStack([FakeSource("vanilla", vanilla=True), _demo_pack()])
-        mono_providers = collect_pack_providers(stack)
-        color_fonts = collect_color_fonts(stack) if color_on else []
+        mono_providers = collect_pack_providers(stack, color_glyphs=color_on)
+        color_fonts = collect_color_fonts(stack, color_glyphs=color_on) if color_on else []
         glyph_map = build_glyph_map(mono_providers, None, stack)
         styles = [dict(s) for s in FONT_STYLES if s["name"] == "Regular"]
         files, _ = create_font_files(

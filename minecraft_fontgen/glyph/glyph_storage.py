@@ -9,7 +9,7 @@ from minecraft_fontgen.glyph.glyph import Glyph
 from minecraft_fontgen.config import (
     NOTDEF, DEFAULT_GLYPH_SIZE, UNITS_PER_EM, UNITS_PER_PIXEL_BASE,
     PPEM_ROUND_EPS, SBIX_RESOLUTION, SBIX_GRAPHIC_TYPE,
-    SBIX_INT16_MIN, SBIX_INT16_MAX, SBIX_UINT16_MAX,
+    INT16_MIN, INT16_MAX, UINT16_MAX,
 )
 from minecraft_fontgen.functions import log
 
@@ -225,8 +225,8 @@ class GlyphStorage:
         Sign/convention is pinned by a FreeType golden-image test, not asserted here;
         the Java consumer reads origin_units from the sidecar instead."""
         oy = round((ascent - display_height) * native_h / display_height) if display_height else 0
-        ox = max(SBIX_INT16_MIN, min(SBIX_INT16_MAX, 0))
-        oy = max(SBIX_INT16_MIN, min(SBIX_INT16_MAX, oy))
+        ox = max(INT16_MIN, min(INT16_MAX, 0))
+        oy = max(INT16_MIN, min(INT16_MAX, oy))
         return ox, oy
 
     def add_space_row(self, font_id, codepoint, advance_signed):
@@ -363,13 +363,13 @@ class GlyphStorage:
         head = self.font["head"]
         os2 = self.font["OS/2"]
         if self.raster_y_top is not None:
-            head.yMax = _clamp(max(head.yMax, ceil(self.raster_y_top)), SBIX_INT16_MIN, SBIX_INT16_MAX)
-            os2.usWinAscent = _clamp(max(os2.usWinAscent, ceil(self.raster_y_top)), 0, SBIX_UINT16_MAX)
+            head.yMax = _clamp(max(head.yMax, ceil(self.raster_y_top)), INT16_MIN, INT16_MAX)
+            os2.usWinAscent = _clamp(max(os2.usWinAscent, ceil(self.raster_y_top)), 0, UINT16_MAX)
         if self.raster_y_bot is not None:
-            head.yMin = _clamp(min(head.yMin, floor(self.raster_y_bot)), SBIX_INT16_MIN, SBIX_INT16_MAX)
+            head.yMin = _clamp(min(head.yMin, floor(self.raster_y_bot)), INT16_MIN, INT16_MAX)
             if self.raster_y_bot < 0:
-                os2.usWinDescent = _clamp(max(os2.usWinDescent, ceil(-self.raster_y_bot)), 0, SBIX_UINT16_MAX)
-        head.xMax = _clamp(max(head.xMax, ceil(self.raster_x_max)), SBIX_INT16_MIN, SBIX_INT16_MAX)
+                os2.usWinDescent = _clamp(max(os2.usWinDescent, ceil(-self.raster_y_bot)), 0, UINT16_MAX)
+        head.xMax = _clamp(max(head.xMax, ceil(self.raster_x_max)), INT16_MIN, INT16_MAX)
 
         # 7. Metrics (maxp.recalc already set numGlyphs; restate for symmetry).
         #    The OS/2 char-index fields are uint16 and xAvgCharWidth is int16, so an
@@ -378,13 +378,13 @@ class GlyphStorage:
         total_glyphs = len(self.glyphs)
         self.font["hhea"].numberOfHMetrics = total_glyphs
         self.font["maxp"].numGlyphs = total_glyphs
-        self.font["OS/2"].usFirstCharIndex = _clamp(self.cpr[0], 0, SBIX_UINT16_MAX)
-        self.font["OS/2"].usLastCharIndex = _clamp(self.cpr[1], 0, SBIX_UINT16_MAX)
+        self.font["OS/2"].usFirstCharIndex = _clamp(self.cpr[0], 0, UINT16_MAX)
+        self.font["OS/2"].usLastCharIndex = _clamp(self.cpr[1], 0, UINT16_MAX)
 
         advances = [aw for (aw, _lsb) in self.hmtx.values() if aw is not None]
         if advances:
             mean_advance = int(round(sum(advances) / len(advances)))
-            self.font["OS/2"].xAvgCharWidth = _clamp(mean_advance, SBIX_INT16_MIN, SBIX_INT16_MAX)
+            self.font["OS/2"].xAvgCharWidth = _clamp(mean_advance, INT16_MIN, INT16_MAX)
 
     def save(self, output_file):
         """Saves the assembled font to an output file."""

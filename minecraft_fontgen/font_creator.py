@@ -4,8 +4,7 @@ from fontTools.ttLib import TTFont
 from tqdm import tqdm
 
 from minecraft_fontgen.config import VANILLA_PACK_ID
-from minecraft_fontgen.functions import log, is_silent
-from minecraft_fontgen.stored_codepoint import allocate_stored_codepoints
+from minecraft_fontgen.functions import log, is_silent, allocate_stored_codepoints
 
 from minecraft_fontgen.glyph.glyph_storage import GlyphStorage
 from minecraft_fontgen.table.glyph_mappings import create_font_mapping_table
@@ -46,7 +45,7 @@ def _fill_color_storage(storage, color_glyph_map, space_by_font_id):
     """Populates a colour storage from one pack's glyph map and space rows.
 
     Every (font_id, original_codepoint) raster pair is assigned a synthetic STORED
-    codepoint from plane 15/16 (see stored_codepoint.allocate_stored_codepoints), so
+    codepoint from plane 15/16 (see functions.allocate_stored_codepoints), so
     codepoints that different font ids reuse coexist in one merged font. Allocation is
     deterministic: the pairs are sorted by (font_id, original_codepoint) and assigned
     linearly from U+F0000, so the same input yields a byte-identical font + sidecar.

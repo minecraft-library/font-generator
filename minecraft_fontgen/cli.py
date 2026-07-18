@@ -4,7 +4,7 @@ import sys
 
 from dataclasses import dataclass
 
-from minecraft_fontgen.config import OUTPUT_DIR, OPENTYPE, FONT_STYLES, RESOURCE_PACKS, INSET_SHARED_VERTICES
+from minecraft_fontgen.config import OUTPUT_DIR, OPENTYPE, FONT_STYLES, RESOURCE_PACKS, INSET_SHARED_VERTICES, COLOR_GLYPHS
 
 VALID_STYLES = {"regular", "bold", "italic", "bolditalic", "galactic", "illageralt"}
 
@@ -140,7 +140,7 @@ def parse_args():
     elif os.environ.get("MCFONT_COLOR_GLYPHS", "").lower() in ("1", "true", "yes"):
         color_glyphs = True
     else:
-        color_glyphs = False
+        color_glyphs = COLOR_GLYPHS
 
     # Colour strikes ride in a TrueType-flavoured sfnt, so the mode forces
     # TrueType/.ttf. If the user explicitly asked for OpenType we warn about the

@@ -10,7 +10,6 @@ import numpy as np
 from collections import defaultdict, deque, OrderedDict
 from tqdm import tqdm
 from PIL import Image, ImageFile
-import minecraft_fontgen.config as config
 from minecraft_fontgen.asset_source import AssetStack, VanillaSource, split_resource_ref
 from minecraft_fontgen.config import ALT_FONT_IDS, ASCENT, BOLD_PACK_GLYPHS, COLOR_CLASSIFY_AA_FRAC_THRESHOLD, COLOR_CLASSIFY_AA_LOW_ALPHA, COLOR_CLASSIFY_MAX_MONO_DIM, COLOR_CLASSIFY_MIN_SIG_COLORS, COLOR_CLASSIFY_OPAQUE_ALPHA, COLOR_CLASSIFY_QUANT_SHIFT, COLOR_CLASSIFY_SIG_FRAC, COLOR_CLASSIFY_SIG_MIN_COUNT, COLOR_PNG_COMPRESS_LEVEL, DEFAULT_GLYPH_SIZE, INK_ALPHA_THRESHOLD, OUTPUT_DIR, MINECRAFT_JAR_DIR, PACK_FONT_IDS, WORK_DIR, UNITS_PER_EM, TEXTURE_PATH, FONT_STYLES
 from minecraft_fontgen.functions import get_unicode_codepoint, in_unifont_ranges, log, is_silent, parse_json, sanitize_fs_name
@@ -62,14 +61,18 @@ def parse_provider_file(file, format, stack=None):
     return providers
 
 
-def collect_pack_providers(stack):
+def collect_pack_providers(stack, color_glyphs=False):
     """Parses and slices the default-font providers contributed by resource packs.
 
     The returned list is ordered so that appending it after the vanilla
     providers reproduces the game's priority under build_glyph_map's last-wins
     merge: later packs beat earlier packs, every pack beats vanilla, a pack's
     default.json beats its include/default.json, and within one file the
-    first-listed provider wins."""
+    first-listed provider wins.
+
+    color_glyphs mirrors the resolved --color-glyphs option: when set, the
+    non-default font ids are ingested by collect_color_providers instead, so the
+    "tool does not build this font" warning is suppressed for them here."""
     providers = []
     for font_id in PACK_FONT_IDS:
         for source in stack.pack_sources():
@@ -89,7 +92,7 @@ def collect_pack_providers(stack):
 
     # In colour mode these font ids are ingested by collect_color_providers, so
     # only warn about them on the mono-only path.
-    if not config.COLOR_GLYPHS:
+    if not color_glyphs:
         for source in stack.pack_sources():
             for font_id in source.list_font_ids():
                 if font_id not in PACK_FONT_IDS and font_id not in ALT_FONT_IDS:
@@ -97,17 +100,18 @@ def collect_pack_providers(stack):
 
     return providers
 
-def collect_color_providers(stack):
+def collect_color_providers(stack, color_glyphs=False):
     """Parses and slices every pack font file's colour cells, tagged with font_id,
     plus the space records that carry negative/fractional advances.
 
-    Returns [] immediately when the colour track is disabled. Otherwise it walks
-    every font id in every pack (the classifier drops the mono cells, so parsing
-    the default-font ids too is cheap and never misses colour art embedded there),
-    stamps each provider with its font_id, and slices only the bitmap providers;
-    the space records carry no texture and bypass slicing. Malformed font JSON is
-    skipped per font id rather than aborting the whole colour pass."""
-    if not config.COLOR_GLYPHS:
+    Returns [] immediately when the colour track is disabled (color_glyphs False).
+    Otherwise it walks every font id in every pack (the classifier drops the mono
+    cells, so parsing the default-font ids too is cheap and never misses colour art
+    embedded there), stamps each provider with its font_id, and slices only the
+    bitmap providers; the space records carry no texture and bypass slicing.
+    Malformed font JSON is skipped per font id rather than aborting the whole colour
+    pass."""
+    if not color_glyphs:
         return []
     providers = []
     for pack_name, font_id, raw in stack.color_font_layers():
@@ -166,23 +170,23 @@ def color_font_namespace(pack_id):
     safe = sanitize_fs_name(pack_id)
     return safe[:1].upper() + safe[1:]
 
-def collect_color_fonts(stack):
+def collect_color_fonts(stack, color_glyphs=False):
     """Composes the per-source-pack colour fonts, mirroring how collect_pack_providers
     composes the mono pack providers: one entry per pack that ships colour art.
 
-    Returns [] when the colour track is off. Otherwise it ingests every pack's colour
-    cells and space advances, partitions them by source pack (each pack becomes its
-    own merged sbix font, not one font for the whole run), and returns a list of
-    colour font specs consumed by create_font_files alongside the mono styles. Each
-    spec carries the pack's identity (pack_id), its capitalized output namespace
+    Returns [] when the colour track is off (color_glyphs False). Otherwise it ingests
+    every pack's colour cells and space advances, partitions them by source pack (each
+    pack becomes its own merged sbix font, not one font for the whole run), and returns
+    a list of colour font specs consumed by create_font_files alongside the mono styles.
+    Each spec carries the pack's identity (pack_id), its capitalized output namespace
     (family_qualifier / Minecraft-<Namespace>.ttf), and the pack's colour glyph map
     and space rows. Packs whose colour font ids yield no raster art and no space rows
     are dropped. Namespaces that collide after sanitization are disambiguated with a
     numeric suffix so N packs always yield N distinct files."""
-    if not config.COLOR_GLYPHS:
+    if not color_glyphs:
         return []
 
-    providers = collect_color_providers(stack)
+    providers = collect_color_providers(stack, color_glyphs)
 
     # Partition by source pack (the provider's layer is its pack id). Stack order is
     # preserved, so the pack sequence is deterministic.

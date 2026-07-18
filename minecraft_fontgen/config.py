@@ -127,6 +127,13 @@ FONT_STYLES = [
 # FontTools Epoch
 MAC_EPOCH = 2082844800 # Seconds since 12:00 midnight, January 1, 1904 UTC
 
+# sfnt integer field bounds. Generic two's-complement limits used to clamp head
+# bbox and OS/2 metric fields into their on-disk widths; not specific to any one
+# table or feature.
+INT16_MIN = -0x8000  # signed 16-bit floor (head bbox, xAvgCharWidth)
+INT16_MAX = 0x7FFF   # signed 16-bit ceiling
+UINT16_MAX = 0xFFFF  # unsigned 16-bit ceiling (usWin metrics, char indices)
+
 # Glyph
 COLUMNS_PER_ROW = 16
 DEFAULT_GLYPH_SIZE = 8
@@ -155,9 +162,6 @@ SOURCE_DATE_EPOCH = None  # Fixed build epoch for reproducible builds; None keep
 COLOR_GLYPHS = False  # True enables the additive colour-glyph track
 SBIX_GRAPHIC_TYPE = "png "  # sbix graphicType tag (trailing space is significant)
 SBIX_RESOLUTION = 72  # sbix strike resolution in ppi
-SBIX_INT16_MIN = -0x8000  # clamp floor for int16 sbix/head fields (originOffset, bbox)
-SBIX_INT16_MAX = 0x7FFF  # clamp ceiling for int16 sbix/head fields
-SBIX_UINT16_MAX = 0xFFFF  # clamp ceiling for uint16 fields (usWin metrics, char indices)
 COLOR_SIDECAR_NAME = "colour-glyphs.json"  # versioned sidecar filename suffix (per pack: Minecraft-<Namespace>.colour-glyphs.json)
 VANILLA_PACK_ID = "vanilla"  # identity of the vanilla/mono source: the mono product is just another identified source
 # Stored-codepoint plane window. Every (font_id, original_codepoint) raster pair is
