@@ -98,7 +98,12 @@ class GlyphStorage:
             advance_width = int(round((glyph.width + 1) * glyph.units_per_pixel))
         lsb = 0
 
-        # Adjust metrics from actual glyph extents (italic shear may widen glyphs)
+        # Measure the drawn outline. The horizontal extents decide only whether it is encodable; the
+        # advance is deliberately not widened to reach them. A sheared glyph leans past its advance and
+        # is meant to: the game reads one advance per codepoint plus a flag for the weight and applies
+        # the slant as it draws, so italic text is exactly as wide as upright text and its glyphs lean
+        # into one another. Widening to reach the sheared ink gave italic a fraction of a pixel of its
+        # own - a whole one on the tallest glyphs - and that is a width the game cannot express.
         all_contours = list(glyph.outer_scaled) + list(glyph.holes_scaled)
         if all_contours:
             all_points = [pt for contour in all_contours for pt in contour]
@@ -115,9 +120,6 @@ class GlyphStorage:
                 log(f" → ⚠️ Skipping U+{glyph.codepoint:04X} in the mono font: outline "
                     f"{ceil(x_max - x_min)}x{ceil(y_max - y_min)} units exceeds the int16 range")
                 return
-
-            if x_max > advance_width:
-                advance_width = ceil(x_max)
 
             self.y_max = max(self.y_max, y_max)
             self.y_min = min(self.y_min, y_min)
