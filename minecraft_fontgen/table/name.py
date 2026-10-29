@@ -39,11 +39,15 @@ def _add(name_table, name_id, text):
 def create_font_name_table(font, bold = False, italic = False, family_qualifier = None):
     """Creates the 'name' table with font family, style, version, and metadata strings.
 
-    family_qualifier is None for every mono style (behaviour is byte-identical to
-    before). The colour track passes the per-font-id string so each colour font
-    carries a distinct family / full name / PostScript name; without it two colour
-    fonts built from different font ids would collide on family+subfamily+fullname
-    at OS install time (a distinct output filename alone does not prevent that)."""
+    family_qualifier gives a font a family of its own. The four default-family styles
+    (Regular, Bold, Italic, BoldItalic) pass None and share one family, told apart by
+    weight and slope. The alternate fonts (Galactic, Illageralt) and every colour font
+    are Regular-weight and upright, so each passes its own qualifier: a name built from
+    weight and slope alone would give them Regular's family, subfamily, full name and
+    PostScript name, and they would collide with it and with each other at OS install
+    time and in any consumer that keys fonts by name (Java's AWT caches one set of
+    metrics per font name, style and size). A distinct output filename alone does not
+    prevent that."""
     name = font["name"] = newTable("name")
     name.names = []
     gtype = get_font_type(bold, italic)
