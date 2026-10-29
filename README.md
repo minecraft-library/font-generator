@@ -198,10 +198,25 @@ python -m minecraft_fontgen --version latest --resource-pack base.zip --resource
 > [!NOTE]
 > By default, vertices shared between two contours (a pixel-font artifact
 > where glyph parts touch corner-to-corner) are inset by 1 font unit to
-> silence FontForge's wrong-direction false positives during `--validate`.
+> silence FontForge's wrong-direction false positives during `--validate`;
+> Bold's and BoldItalic's two copies keep theirs, as the other copy's ink
+> meets each one.
 > Some renderers draw hairline gaps at these inset corners — if glyphs look
 > like they have shaved corners or missing pixel tips, rebuild with
 > `--no-vertex-inset` to keep the exact pixel outlines.
+
+> [!NOTE]
+> Bold, Italic and BoldItalic are drawn as the game draws them: Bold is the
+> glyph twice, one bold offset apart (a pixel, half a pixel for unifont
+> glyphs), and the slanted styles are one parallelogram per row of ink. Those
+> contours overlap or abut, which renderers fill as one shape, and FontForge's
+> `--validate` reports most of their glyphs as having a wrong-direction
+> contour. Where a row of ink has a one-pixel hole, the game's second bold copy
+> leaves a sliver of it open, under 3% of a pixel wide; the fonts close each
+> sliver no pixel centre falls in at GUI scales 1-4 and keep the rest, where
+> the game leaves that pixel unlit, so antialiased rendering at large sizes
+> shows those as hairlines, BoldItalic's especially. Regular, Galactic and
+> Illageralt are unaffected.
 
 <details>
 <summary>The <code>.env</code> file</summary>
@@ -256,10 +271,6 @@ vanilla font PNGs) can be merged into the generated fonts.
 > - Glyph left padding is trimmed and advances derive from the inked width, so
 >   icons centered inside their tile sit further left, with narrower advances,
 >   than in game.
-> - Bold applies a 1 texture-pixel rightward smear. That matches the game for
->   packs whose tiles render at native size; on high-resolution packs the
->   game's bold offset is 1 display pixel, so bolded hi-res glyphs come out
->   slightly heavier here.
 
 
 ## Output
@@ -329,7 +340,7 @@ Key points:
   deterministic per build, so the same input yields a byte-identical font + sidecar;
   because the assignment can shift across pack updates, the font and sidecar ship as
   a matched pair.
-- **Regular only.** Bold smears a bitmap grid and Italic is a vector shear, both
+- **Regular only.** Bold redraws an outline and Italic slants one, both
   meaningless on a raster cell, so colour glyphs are emitted in Regular only.
 - **The sidecar carries what the font cannot.** Each pack's
   `Minecraft-<PackNamespace>.colour-glyphs.json` (schema v2) is a versioned manifest
@@ -837,9 +848,8 @@ The tool runs a six-stage pipeline:
                font units) for all glyphs
        ↓
 5. Create      Initializes fontTools TTFont tables for each enabled style,
-               converts all glyphs with a single progress bar, applies italic
-               shear transforms where needed, then finalizes and saves the
-               font files
+               draws every style's pre-computed contours with a single
+               progress bar, then finalizes and saves the font files
        ↓
 6. Validate    (Optional, --validate) Runs FontForge validation on all
                generated font files, reporting per-glyph errors by type
@@ -852,9 +862,16 @@ Each bitmap glyph goes through:
 1. **Flood-fill labeling** - Identifies connected pixel groups
 2. **Boundary tracing** - Right-hand rule extracts contour edges
 3. **Corner extraction** - Converts edges to corner points for vector outlines
-4. **Bold expansion** - Bold glyphs get a 1px rightward expansion before tracing
-5. **Coordinate scaling** - Pixel coordinates are mapped to font units (`UNITS_PER_EM = 1024`)
-6. **Italic shear** - Italic variants apply a shear transform to the pre-computed coordinates
+4. **Coordinate scaling** - Pixel coordinates are mapped to font units (`UNITS_PER_EM = 1024`)
+5. **Bold copies** - Bold draws the outline twice as the game does: on a quad grown 0.1
+   pixel on every side and sampled with its texels inset 0.01, the second copy one pixel
+   right (half a pixel for unifont glyphs), and advances by that offset more than Regular.
+   A sliver the copies leave that no pixel centre at GUI scales 1-4 falls in is closed
+6. **Italic slant** - The slanted styles draw a parallelogram over each row of ink, moved
+   right `(y - 384) / 4` font units as the game slants it; BoldItalic snaps its vertices so
+   every pixel centre at GUI scales 1-4 falls on the side of an edge the game samples it -
+   and from 24 px/em, where FreeType places an edge only to about 1/64 of a pixel, at least
+   that far from it
 7. **Pen drawing** - `T2CharStringPen` for CFF outlines or `TTGlyphPen` for TrueType
 
 ## Project Structure

@@ -5,7 +5,7 @@ from collections import defaultdict
 from fontTools.pens.t2CharStringPen import T2CharStringPen
 from fontTools.pens.ttGlyphPen import TTGlyphPen
 
-from minecraft_fontgen.config import UNITS_PER_EM, DEFAULT_GLYPH_SIZE, NOTDEF, NOTDEF_GLYPH, ITALIC_SHEAR_FACTOR
+from minecraft_fontgen.config import UNITS_PER_EM, DEFAULT_GLYPH_SIZE, NOTDEF, NOTDEF_GLYPH
 from minecraft_fontgen.functions import get_unicode_codepoint
 
 class Glyph:
@@ -50,8 +50,10 @@ class Glyph:
         self.scaled = tile.get("scaled", None)
         self.units_per_pixel = tile.get("units_per_pixel", UNITS_PER_EM / self.size[1])
         self.advance_units = tile.get("advance_units")
+        self.bold_offset_units = tile.get("bold_offset_units", 0)
         self.outer_scaled = []
         self.holes_scaled = []
+        self.groups = []
 
         # Create pen
         self.pen = self._new_pen()
@@ -105,7 +107,7 @@ class Glyph:
             return TTGlyphPen(None)
         if self.use_cff:
             if self.codepoint == 0x0020:
-                advance_width = UNITS_PER_EM // 2
+                advance_width = UNITS_PER_EM // 2 + self.bold_offset_units
             elif self.advance_units is not None:
                 advance_width = self.advance_units
             else:
@@ -179,7 +181,9 @@ class Glyph:
             f.write(svg_header + "\n" + "\n".join(svg_paths) + "\n" + svg_footer)
 
     def scale(self, italic=False):
-        """Assigns pre-computed scaled coordinates, applying italic shear if requested."""
+        """Assigns pre-computed scaled coordinates: the upright outline (a Bold entry's two copies),
+        or for a slanted style the pre-computed slanted runs, each with the bridges that close the
+        slivers between a Bold entry's copies."""
         if self.scaled is None:
             return
 
@@ -190,22 +194,25 @@ class Glyph:
             return
 
         if italic:
-            def apply_shear(pt):
-                sx, sy = pt
-                return (sx + sy * ITALIC_SHEAR_FACTOR, sy)
-            self.outer_scaled = [[apply_shear(pt) for pt in path] for path in outer]
-            self.holes_scaled = [[apply_shear(pt) for pt in path] for path in holes]
+            runs = self.scaled["runs"]
+            self.outer_scaled = runs
+            self.holes_scaled = []
+            self.groups = [([run], []) for run in runs + self.scaled.get("slanted_bridges", [])]
         else:
             self.outer_scaled = outer
             self.holes_scaled = holes
+            copies = self.scaled.get("copies") or [{"outer": outer, "holes": holes}]
+            self.groups = [(copy["outer"], copy["holes"]) for copy in copies]
+            self.groups += [([bridge], []) for bridge in self.scaled.get("bridges", [])]
 
     def draw(self):
-        """Draws contours with winding based on geometric nesting depth."""
-        if not self.outer_scaled and not self.holes_scaled:
-            return
+        """Draws contours with winding based on geometric nesting depth within their group - a bold
+        copy, a slanted run - so that groups which overlap fill as their union."""
+        for outer, holes in self.groups:
+            self._draw_group(list(outer) + list(holes))
 
-        all_contours = list(self.outer_scaled) + list(self.holes_scaled)
-
+    def _draw_group(self, all_contours):
+        """Draws one group's contours, each wound by how many of the group's others contain it."""
         for contour in all_contours:
             if len(contour) < 3:
                 continue

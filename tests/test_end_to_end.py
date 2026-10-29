@@ -1,5 +1,6 @@
 import os
 
+import pytest
 from fontTools.ttLib import TTFont
 
 from minecraft_fontgen.asset_source import AssetStack
@@ -56,8 +57,57 @@ def test_pack_glyphs_flow_into_generated_fonts():
     assert hmtx["uni0041"][0] == 1152  # vanilla 8px glyph: (8 + 1) * 128
 
     bold = TTFont(next(f for f in files if "Bold" in f))
-    assert bold["hmtx"]["uniE000"][0] == 640  # 1px bold smear: (4 + 1) * 128
+    assert bold["hmtx"]["uniE000"][0] == 640  # 3px icon: (3 + 1) * 128, plus the one-pixel bold offset
 
     italic = TTFont(next(f for f in files if "Italic" in f))
     italic_cmap = italic.getBestCmap()
     assert 0xE000 in italic_cmap and 0x12DE in italic_cmap
+
+
+def test_the_styled_faces_take_the_clients_advances_and_slant():
+    """Bold advances by Regular's advance plus the client's bold offset - one GUI pixel for a bitmap glyph,
+    the space included - whatever ink the glyph has; each slanted face advances as its upright weight
+    does, and publishes the slant it is drawn with."""
+    vanilla = FakeSource("vanilla", vanilla=True, fonts={
+        "minecraft:include/default": font_json_bytes([
+            {"type": "bitmap", "file": "minecraft:font/base.png", "ascent": 7, "height": 8, "chars": ["A "]},
+        ]),
+    }, textures={
+        "minecraft:font/base.png": make_png_bytes(16, 8, block(0, 0, 8, 8)),
+    })
+    pack = FakeSource("skypack", fonts={
+        "minecraft:default": font_json_bytes([
+            {"type": "bitmap", "file": "sky:gui/icons.png", "ascent": 7, "height": 7, "chars": ["\ue000"]},
+        ]),
+    }, textures={
+        "sky:gui/icons.png": make_png_bytes(7, 7, block(0, 0, 3, 4)),
+    })
+    stack = AssetStack([vanilla, pack])
+
+    providers = parse_json_providers(
+        vanilla.get_font_json("minecraft:include/default"), stack, layer_name="vanilla")
+    slice_provider_tiles(providers)
+    providers += collect_pack_providers(stack)
+    glyph_map = build_glyph_map(providers, None, stack)
+
+    names = ("Regular", "Bold", "Italic", "BoldItalic")
+    os.makedirs("out", exist_ok=True)
+    create_font_files(glyph_map, True, [dict(s) for s in FONT_STYLES if s["name"] in names],
+                      "out", "Minecraft", "otf")
+    faces = {name: TTFont(f"out/Minecraft-{name}.otf") for name in names}
+    advances = {name: {g: face["hmtx"][g][0] for g in face.getGlyphOrder()} for name, face in faces.items()}
+
+    assert advances["Regular"]["uni0041"] == 1152 and advances["Bold"]["uni0041"] == 1280  # ink in the last column
+    assert advances["Regular"]["uniE000"] == 512 and advances["Bold"]["uniE000"] == 640    # 3px pack icon
+    assert advances["Regular"]["uni0020"] == 512 and advances["Bold"]["uni0020"] == 640    # the space
+    assert advances["Italic"] == advances["Regular"]
+    assert advances["BoldItalic"] == advances["Bold"]
+
+    for name, face in faces.items():
+        slanted = name in ("Italic", "BoldItalic")
+        assert face["post"].italicAngle == pytest.approx(-14.0362 if slanted else 0, abs=1e-4), name
+        top_dict = face["CFF "].cff.topDictIndex[0]
+        assert top_dict.ItalicAngle == pytest.approx(-14.0362 if slanted else 0, abs=1e-4), name
+        hhea = face["hhea"]
+        caret = (hhea.caretSlopeRise, hhea.caretSlopeRun, hhea.caretOffset)
+        assert caret == ((4, 1, -96) if slanted else (1, 0, 0)), name

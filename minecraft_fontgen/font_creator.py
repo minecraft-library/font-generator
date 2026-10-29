@@ -27,9 +27,9 @@ def _init_font(spec, use_cff):
     identical to the mono path, so mono output stays byte-identical."""
     font = TTFont()
     create_font_header_table(font, use_cff)
-    create_font_hheader_table(font, use_cff)
+    create_font_hheader_table(font, use_cff, spec["italic"])
     create_font_mprofile_table(font, use_cff)
-    create_font_pscript_table(font, use_cff)
+    create_font_pscript_table(font, use_cff, spec["italic"])
     create_font_hmetrics_table(font)
     create_font_name_table(font, spec["bold"], spec["italic"],
                            family_qualifier=spec.get("family_qualifier"))

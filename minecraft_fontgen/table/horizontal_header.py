@@ -1,16 +1,20 @@
+from fractions import Fraction
+
 from fontTools.ttLib import newTable
 
-from minecraft_fontgen.config import ASCENT, DESCENT, MAX_ADVANCE_WIDTH, BOUNDING_BOX
+from minecraft_fontgen.config import ASCENT, DESCENT, MAX_ADVANCE_WIDTH, BOUNDING_BOX, ITALIC_SHEAR_FACTOR, ITALIC_SHEAR_PIVOT
 
-def create_font_hheader_table(font, use_cff: bool = True):
-    """Creates the 'hhea' table with horizontal layout metrics (ascent, descent, line gap)."""
+def create_font_hheader_table(font, use_cff: bool = True, italic: bool = False):
+    """Creates the 'hhea' table with horizontal layout metrics (ascent, descent, line gap). An
+    italic style's caret leans as its glyphs do, offset by the slant's shift on the baseline."""
+    slope = Fraction(ITALIC_SHEAR_FACTOR).limit_denominator(1000)
     hhea = font["hhea"] = newTable("hhea")
     hhea.advanceWidthMax = MAX_ADVANCE_WIDTH # Maximum advance width among all glyphs
     #hhea.ascender = ASCENT
     hhea.ascent = ASCENT # Used for line height and vertical alignment
-    hhea.caretOffset = 0
-    hhea.caretSlopeRise = 1 # Defines the slope of the caret for italic text
-    hhea.caretSlopeRun = 0 # Defines the slope of the caret for italic text
+    hhea.caretOffset = round(-ITALIC_SHEAR_PIVOT * ITALIC_SHEAR_FACTOR) if italic else 0 # Shift of a slanted caret: the slant's shift on the baseline
+    hhea.caretSlopeRise = slope.denominator if italic else 1 # Defines the slope of the caret for italic text
+    hhea.caretSlopeRun = slope.numerator if italic else 0 # Defines the slope of the caret for italic text
     #hhea.descender = DESCENT
     hhea.descent = DESCENT # Depth below baseline (negative value)
     hhea.lineGap = 0 # Extra space between lines

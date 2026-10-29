@@ -140,7 +140,7 @@ UINT16_MAX = 0xFFFF  # unsigned 16-bit ceiling (usWin metrics, char indices)
 COLUMNS_PER_ROW = 16
 DEFAULT_GLYPH_SIZE = 8
 INK_ALPHA_THRESHOLD = 0  # a pixel is glyph coverage when alpha exceeds this (the game uses any alpha above 0)
-BOLD_PACK_GLYPHS = True  # False keeps pack-layer glyphs un-smeared in the Bold styles
+BOLD_PACK_GLYPHS = True  # False keeps pack-layer glyphs as their single Regular copy in the Bold styles
 PACK_FONT_IDS = ("minecraft:include/default", "minecraft:default")  # default-font layers consumed from packs, in merge order
 ALT_FONT_IDS = ("minecraft:alt", "minecraft:illageralt")  # font ids handled by the alternate-style overlays
 UNITS_PER_EM = 1024
@@ -189,9 +189,23 @@ COLOR_CLASSIFY_SIG_FRAC = 0.02  # fraction of opaque pixels for a colour to be s
 COLOR_CLASSIFY_QUANT_SHIFT = 4  # bits shifted off each channel when quantizing colours (4 -> 4 bits per channel)
 
 # Italic Glyph
-ITALIC_SHEAR_VERTICAL = 5
-ITALIC_SHEAR_FACTOR = 1 / ITALIC_SHEAR_VERTICAL
+# The game slants a glyph as it draws it: a point y_rel GUI pixels below the line top moves
+# 1 - 0.25 * y_rel pixels right, so in font units x' = x + (y - ITALIC_SHEAR_PIVOT) * ITALIC_SHEAR_FACTOR.
+ITALIC_SHEAR_FACTOR = 0.25  # pixels of slant per pixel of height
+ITALIC_SHEAR_PIVOT = ASCENT - 4 * UNITS_PER_PIXEL_BASE  # 384: the height the slant leaves in place, 4 pixels below the line top
 ITALIC_SHEAR_ANGLE = atan(ITALIC_SHEAR_FACTOR)
+
+# Bold Glyph
+# The game draws a bold glyph twice, the second copy one bold offset right of the first, and grows
+# each copy's quad by an extra thickness on every side; the glyph's texture is sampled with its UVs
+# inset a hundredth of a texel, so a border texel's outer edge is never drawn.
+BOLD_EXTRA_THICKNESS = UNITS_PER_PIXEL_BASE / 10  # 12.8: a tenth of a pixel on every side of each copy
+GLYPH_UV_INSET = 0.01  # texels the game's UVs sit inside a glyph's texture on every side
+BOLD_OFFSET_UNITS = {"provider": 128, "space": 128, "unifont": 64}  # bold offset (also added to the advance) by where a glyph came from: one pixel for bitmap and space glyphs, half for unifont
+SNAP_GUI_SCALES = (1, 2, 3, 4)  # GUI scales at which BoldItalic's vertices keep every pixel centre on the side the game samples it
+SNAP_COARSE_PPEM = 24  # from this many pixels per em FreeType places where a slanted edge crosses a pixel row to only about a 64th of a pixel
+SNAP_EDGE_MARGIN = 1 / 64  # output pixels a BoldItalic edge keeps from every pixel centre at a GUI scale drawn that coarsely
+BOLD_SEAM_MAX_UNITS = UNITS_PER_PIXEL_BASE / 8  # 16: a gap between the two bold copies narrower than this, which no pixel centre at SNAP_GUI_SCALES falls in, is closed
 
 # Unifont Codepoint Ranges
 # Controls which Unicode blocks are included from GNU Unifont hex files.
