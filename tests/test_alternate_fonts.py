@@ -3,8 +3,12 @@ from collections import OrderedDict
 
 import minecraft_fontgen.file_io as file_io
 from minecraft_fontgen.asset_source import AssetStack
-from minecraft_fontgen.config import FONT_STYLES
+from minecraft_fontgen.config import (
+    FONT_STYLES, VERSION, MANUFACTURER, DESIGNER, DESCRIPTION, COPYRIGHT,
+    VENDOR_URL, DESIGNER_URL, SAMPLE_TEXT
+)
 from minecraft_fontgen.file_io import _process_alternate_font, build_glyph_map, slice_provider_tiles
+from minecraft_fontgen.font_creator import _init_font
 
 from helpers import FakeSource, block, font_json_bytes, make_png_bytes
 
@@ -80,6 +84,101 @@ def test_font_styles_carry_font_ids():
     assert by_name["Galactic"]["font_id"] == "minecraft:alt"
     assert by_name["Illageralt"]["font_id"] == "minecraft:illageralt"
     assert "json_file" not in by_name["Galactic"]
+
+
+# ==========================================
+# === name table: each font's identity ===
+# ==========================================
+
+# The (platformID, platEncID, langID) of every name record the generator writes:
+# Unicode BMP, Mac Roman English, and Windows Unicode BMP en-US.
+_NAME_PLATFORMS = {(0, 3, 0), (1, 0, 0), (3, 1, 0x409)}
+
+
+def _name_records(spec):
+    """Every name record of the font _init_font builds for one style spec, as
+    platformID -> {nameID: text}. The records must cover exactly the three platforms
+    the generator writes, with no nameID twice on one platform, so a dropped, added or
+    doubled record fails here rather than slipping past a pinned dict."""
+    records = _init_font(spec, True)["name"].names
+    assert {(r.platformID, r.platEncID, r.langID) for r in records} == _NAME_PLATFORMS, spec["name"]
+    by_platform = {}
+    for r in records:
+        names = by_platform.setdefault(r.platformID, {})
+        assert r.nameID not in names, (spec["name"], r.platformID, r.nameID)
+        names[r.nameID] = r.toUnicode()
+    return by_platform
+
+
+def _assert_name_table(spec, family, subfamily, full_name, ps_name, typo_family):
+    """Pins the whole name table of one style on every platform: its identity strings
+    and the metadata every font shares."""
+    expected = {
+        0: COPYRIGHT,
+        1: family,
+        2: subfamily,
+        3: f"Version {VERSION};{MANUFACTURER};{full_name}",
+        4: full_name,
+        5: f"Version {VERSION}",
+        6: ps_name,
+        8: MANUFACTURER,
+        9: DESIGNER,
+        10: DESCRIPTION,
+        11: VENDOR_URL,
+        12: DESIGNER_URL,
+        16: typo_family,
+        17: subfamily,
+        18: full_name,
+        19: SAMPLE_TEXT,
+    }
+    for platform, names in _name_records(spec).items():
+        assert names == expected, (spec["name"], platform)
+
+
+def test_alternate_fonts_carry_their_own_name():
+    """Galactic and Illageralt are Regular-weight, upright faces like Regular itself, so
+    a name built from the weight and slope alone gives all three one identity - and a
+    consumer that caches metrics by font name lays the alt fonts out at Regular's widths.
+    The qualifier names the family and leaves the subfamily 'Regular', the way a face
+    outside the four-style group keeps its distinction in the family name."""
+    by_name = {s["name"]: s for s in FONT_STYLES}
+    windows = {style: _name_records(by_name[style])[3] for style in ("Regular", "Galactic", "Illageralt")}
+
+    # family, unique id, full name, PostScript name, typographic family, compatible full
+    for name_id in (1, 3, 4, 6, 16, 18):
+        assert len({names[name_id] for names in windows.values()}) == 3, name_id
+
+    _assert_name_table(by_name["Galactic"], "Minecraft Galactic Font", "Regular",
+                       "Minecraft Galactic Font Regular", "Minecraft-GalacticRegular",
+                       "Minecraft Galactic")
+    _assert_name_table(by_name["Illageralt"], "Minecraft Illageralt Font", "Regular",
+                       "Minecraft Illageralt Font Regular", "Minecraft-IllageraltRegular",
+                       "Minecraft Illageralt")
+
+
+def test_no_two_font_styles_share_an_identity():
+    """The keys an OS font install and AWT's font lookup collide on: family plus
+    subfamily, the full name, the PostScript name, and the typographic pair, on each
+    platform a reader may take them from."""
+    names = {s["name"]: _name_records(s) for s in FONT_STYLES}
+    for platform in sorted({p for p, _, _ in _NAME_PLATFORMS}):
+        for key in ((1, 2), (4,), (6,), (16, 17)):
+            seen = {}
+            for style, by_platform in names.items():
+                identity = tuple(by_platform[platform][name_id] for name_id in key)
+                assert identity not in seen, \
+                    f"{style} and {seen[identity]} share {key} on platform {platform}: {identity}"
+                seen[identity] = style
+
+
+def test_default_family_name_tables_are_unchanged():
+    """The four default-family faces carry no qualifier, so each names the one shared
+    family and tells itself apart by weight and slope alone, record for record on
+    every platform."""
+    by_name = {s["name"]: s for s in FONT_STYLES}
+    for style in ("Regular", "Bold", "Italic", "BoldItalic"):
+        _assert_name_table(by_name[style], "Minecraft Font", style,
+                           f"Minecraft Font {style}", f"Minecraft{style}", "Minecraft")
 
 
 # ==========================================

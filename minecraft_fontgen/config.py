@@ -101,6 +101,7 @@ FONT_STYLES = [
         "italic": False,
         "pixel_style": "Galactic",
         "font_id": "minecraft:alt",
+        "family_qualifier": "Galactic",  # Own family name; Regular weight and slope alone would name it Regular
         "map_lowercase": True,  # Duplicate uppercase glyphs onto lowercase codepoints
         "debug": {
             "svg": False,
@@ -115,6 +116,7 @@ FONT_STYLES = [
         "italic": False,
         "pixel_style": "Illageralt",
         "font_id": "minecraft:illageralt",
+        "family_qualifier": "Illageralt",  # Own family name; Regular weight and slope alone would name it Regular
         "map_lowercase": False,
         "debug": {
             "svg": False,
