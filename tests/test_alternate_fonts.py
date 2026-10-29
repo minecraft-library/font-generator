@@ -187,9 +187,9 @@ def test_default_family_name_tables_are_unchanged():
 
 def _bold_pack_providers():
     """A vanilla-layer 'V' provider and a pack-layer 'P' provider, each holding a
-    single 3px-wide bar glyph (columns 0-2, rows 2-5 of an 8x8 tile). Bold tracing
-    expands the bar 1px rightward, so regular width == 3 and bold width == 4,
-    a cheap, reliable way to tell which trace a Bold entry actually carries."""
+    single 3px-wide bar glyph (columns 0-2, rows 2-5 of an 8x8 tile). A Bold entry
+    drawn as the client's two copies advances one pixel further than Regular, a
+    cheap, reliable way to tell which a Bold entry actually carries."""
     os.makedirs("work/glyphs/vanilla_bp", exist_ok=True)
     os.makedirs("work/glyphs/pack_bp", exist_ok=True)
     with open("work/vanilla_bp.png", "wb") as f:
@@ -230,17 +230,20 @@ def test_bold_pack_glyphs_flag_swaps_pack_layer_trace_only(monkeypatch):
     vanilla_provider, pack_provider = _bold_pack_providers()
     slice_provider_tiles([vanilla_provider, pack_provider])
 
-    # Default (BOLD_PACK_GLYPHS=True): both vanilla and pack Bold entries carry the bold trace.
+    # Default (BOLD_PACK_GLYPHS=True): both vanilla and pack Bold entries draw two copies.
     glyph_map = build_glyph_map([vanilla_provider, pack_provider], None)
-    assert glyph_map["Bold"][ord("V")]["pixels"]["width"] == 4
-    assert glyph_map["Bold"][ord("P")]["pixels"]["width"] == 4
+    for char in "VP":
+        assert len(glyph_map["Bold"][ord(char)]["scaled"]["copies"]) == 2
+        assert glyph_map["Bold"][ord(char)]["advance_units"] == 640  # (3 + 1) * 128 + 128
 
-    # BOLD_PACK_GLYPHS=False: the pack-layer Bold entry falls back to the regular
-    # trace (un-smeared); the vanilla-layer Bold entry is unaffected.
+    # BOLD_PACK_GLYPHS=False: the pack-layer Bold entry stays the single Regular
+    # glyph at Regular's advance; the vanilla-layer Bold entry is unaffected.
     monkeypatch.setattr(file_io, "BOLD_PACK_GLYPHS", False)
     glyph_map = build_glyph_map([vanilla_provider, pack_provider], None)
-    assert glyph_map["Bold"][ord("V")]["pixels"]["width"] == 4
-    assert glyph_map["Bold"][ord("P")]["pixels"]["width"] == 3
+    assert len(glyph_map["Bold"][ord("V")]["scaled"]["copies"]) == 2
+    assert glyph_map["Bold"][ord("V")]["advance_units"] == 640
+    assert "copies" not in glyph_map["Bold"][ord("P")]["scaled"]
+    assert glyph_map["Bold"][ord("P")]["advance_units"] == 512
 
 
 # ==========================================

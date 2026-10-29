@@ -8,10 +8,12 @@ import sys
 import numpy as np
 
 from collections import defaultdict, deque, OrderedDict
+from fractions import Fraction
+from fontTools.misc.roundTools import otRound
 from tqdm import tqdm
 from PIL import Image, ImageFile
 from minecraft_fontgen.asset_source import AssetStack, VanillaSource, split_resource_ref
-from minecraft_fontgen.config import ALT_FONT_IDS, ASCENT, BOLD_PACK_GLYPHS, COLOR_CLASSIFY_AA_FRAC_THRESHOLD, COLOR_CLASSIFY_AA_LOW_ALPHA, COLOR_CLASSIFY_MAX_MONO_DIM, COLOR_CLASSIFY_MIN_SIG_COLORS, COLOR_CLASSIFY_OPAQUE_ALPHA, COLOR_CLASSIFY_QUANT_SHIFT, COLOR_CLASSIFY_SIG_FRAC, COLOR_CLASSIFY_SIG_MIN_COUNT, COLOR_PNG_COMPRESS_LEVEL, DEFAULT_GLYPH_SIZE, INK_ALPHA_THRESHOLD, OUTPUT_DIR, MINECRAFT_JAR_DIR, PACK_FONT_IDS, WORK_DIR, UNITS_PER_EM, TEXTURE_PATH, FONT_STYLES
+from minecraft_fontgen.config import ALT_FONT_IDS, ASCENT, BOLD_EXTRA_THICKNESS, BOLD_OFFSET_UNITS, BOLD_PACK_GLYPHS, BOLD_SEAM_MAX_UNITS, COLOR_CLASSIFY_AA_FRAC_THRESHOLD, COLOR_CLASSIFY_AA_LOW_ALPHA, COLOR_CLASSIFY_MAX_MONO_DIM, COLOR_CLASSIFY_MIN_SIG_COLORS, COLOR_CLASSIFY_OPAQUE_ALPHA, COLOR_CLASSIFY_QUANT_SHIFT, COLOR_CLASSIFY_SIG_FRAC, COLOR_CLASSIFY_SIG_MIN_COUNT, COLOR_PNG_COMPRESS_LEVEL, DEFAULT_GLYPH_SIZE, GLYPH_UV_INSET, INK_ALPHA_THRESHOLD, ITALIC_SHEAR_FACTOR, ITALIC_SHEAR_PIVOT, OUTPUT_DIR, MINECRAFT_JAR_DIR, PACK_FONT_IDS, SNAP_COARSE_PPEM, SNAP_EDGE_MARGIN, SNAP_GUI_SCALES, WORK_DIR, UNITS_PER_EM, UNITS_PER_PIXEL_BASE, TEXTURE_PATH, FONT_STYLES
 from minecraft_fontgen.functions import get_unicode_codepoint, in_unifont_ranges, log, is_silent, parse_json, sanitize_fs_name
 
 # Reference (HD) packs ship font textures whose zlib/IDAT streams a strict decoder
@@ -443,11 +445,9 @@ def slice_provider_tiles(providers, color_mode=False):
     and the decoded RGBA sheet is available per provider for the raster path."""
     log(f"→ ✂️ Slicing bitmap providers into tiles...")
 
-    debug_svg_regular = any(s.get("debug", {}).get("svg") for s in FONT_STYLES if s["pixel_style"] == "Regular")
-    debug_svg_bold = any(s.get("debug", {}).get("svg") for s in FONT_STYLES if s["pixel_style"] == "Bold")
     # The colour path keeps every debug writer off regardless of FONT_STYLES flags
     # (the per-tile BMP is gated at its crop_tile call site below).
-    debug_svg = (debug_svg_regular or debug_svg_bold) and not color_mode
+    debug_svg = any(s.get("debug", {}).get("svg") for s in FONT_STYLES) and not color_mode
     debug_bmp = any(s.get("debug", {}).get("bmp") for s in FONT_STYLES)
 
     for provider in providers:
@@ -532,20 +532,15 @@ def slice_provider_tiles(providers, color_mode=False):
                 # Crop tile bitmap from full bitmap (mono outline path only)
                 tile["bitmap"] = crop_tile(bitmap, tile, save=debug_bmp and not color_mode)
 
-                # Trace contours for regular and bold styles
+                # Trace contours (every style draws from the one trace)
                 tile["pixels"] = trace_tile_contours(tile)
 
-                # Create svg debug output
+                # Create svg debug output: one pixel grid, the trace every style draws from
                 tile["svg"] = None
                 if debug_svg:
                     if not debug_bmp:
                         os.makedirs(tile["output"], exist_ok=True)
-                    svg = {}
-                    if debug_svg_regular:
-                        svg["regular"] = _write_tile_svg(tile["pixels"]["regular"]["grid"], tile["size"], f"{tile['output']}/regular.svg")
-                    if debug_svg_bold:
-                        svg["bold"] = _write_tile_svg(tile["pixels"]["bold"]["grid"], tile["size"], f"{tile['output']}/bold.svg")
-                    tile["svg"] = svg
+                    tile["svg"] = _write_tile_svg(tile["pixels"]["regular"]["grid"], tile["size"], f"{tile['output']}/regular.svg")
 
         provider["tiles"] = tiles
 
@@ -721,17 +716,17 @@ def raster_cell_hash(cell):
     return hashlib.sha256(normalized_cell_bytes(cell)).hexdigest()
 
 def trace_tile_contours(tile):
-    """Traces contours from a tile's bitmap for both regular and bold styles."""
+    """Traces contours from a tile's bitmap. Every style draws from this one trace: Bold draws it
+    twice and the slanted styles shear its ink runs, both while the glyph map is scaled."""
     return {
-        "regular": _trace_tile_style(tile, False),
-        "bold": _trace_tile_style(tile, True)
+        "regular": _trace_tile_style(tile)
     }
 
-def _trace_tile_style(tile, bold: bool = False):
+def _trace_tile_style(tile):
     """Converts a tile's PIL bitmap image to a binary numpy grid and traces its contours."""
     bitmap_grid = np.array(tile["bitmap"]["image"].convert("L"), dtype=int)
     bitmap_grid = (bitmap_grid < 128).astype(np.uint8)
-    return _trace_bitmap_contours2(bitmap_grid, bold)
+    return _trace_bitmap_contours2(bitmap_grid)
 
 def _trace_bitmap_contours(bitmap_grid, bold: bool = False):
     """Traces contours from a binary bitmap grid using flood-fill labeling and right-hand edge
@@ -900,7 +895,7 @@ def _trace_bitmap_contours(bitmap_grid, bold: bool = False):
         "holes": {label: get_path_data(pixel_grid, label) for label in hole_labels}
     }
 
-def _trace_bitmap_contours2(bitmap_grid, bold: bool = False):
+def _trace_bitmap_contours2(bitmap_grid):
     """Traces contours from a binary bitmap grid using flood-fill labeling and multi-loop
     boundary-edge extraction. Unlike _trace_bitmap_contours which uses a single right-hand
     rule traversal per label (capturing only one loop), this function collects ALL boundary
@@ -921,12 +916,6 @@ def _trace_bitmap_contours2(bitmap_grid, bold: bool = False):
     """
     height, width = bitmap_grid.shape
     pixel_grid = np.full((height, width), -999, dtype=int)
-
-    if bold:
-        for i in range(bitmap_grid.shape[0] - 1, -1, -1):
-            for j in range(bitmap_grid.shape[1] - 1, -1, -1):
-                if bitmap_grid[i, j] == 1 and j + 1 < bitmap_grid.shape[1] and bitmap_grid[i, j + 1] == 0:
-                    bitmap_grid[i, j + 1] = 1
 
     def update_grid(queue, bit_match, next_label, neighbours=None):
         while queue:
@@ -1290,25 +1279,25 @@ def build_glyph_map(providers, unifont_glyphs, stack=None, inset_vertices=True):
     log(f"🧩 Building unified glyph map...")
     glyph_map = {"Regular": OrderedDict(), "Bold": OrderedDict()}
 
-    # 1. Add provider glyphs (priority - added first)
+    # 1. Add provider glyphs (priority - added first). A Bold entry draws the Regular pixels as
+    #    the game's two bold copies, unless it is a pack glyph and BOLD_PACK_GLYPHS is off.
     for provider in providers:
         for tile in provider["tiles"]:
             cp = tile["codepoint"]
             for style_key in ("Regular", "Bold"):
-                style = style_key.lower()
-                if style_key == "Bold" and not BOLD_PACK_GLYPHS and tile.get("layer", "vanilla") != "vanilla":
-                    style = "regular"
+                layer = tile.get("layer", "vanilla")
                 flat_tile = {
                     "unicode": tile["unicode"],
                     "codepoint": cp,
                     "size": tile["size"],
                     "display_height": tile.get("display_height"),
                     "ascent": tile["ascent"],
-                    "layer": tile.get("layer", "vanilla"),
+                    "layer": layer,
                     "font_id": tile.get("font_id"),
-                    "pixels": tile["pixels"][style],
-                    "svg": tile["svg"].get(style) if tile.get("svg") else None,
-                    "source": "provider"
+                    "pixels": tile["pixels"]["regular"],
+                    "svg": tile.get("svg"),
+                    "source": "provider",
+                    "bold_copies": style_key == "Bold" and (BOLD_PACK_GLYPHS or layer == "vanilla"),
                 }
                 glyph_map[style_key][cp] = flat_tile
 
@@ -1319,11 +1308,11 @@ def build_glyph_map(providers, unifont_glyphs, stack=None, inset_vertices=True):
     # 2. Add unifont glyphs (fallback - skip if codepoint exists)
     if unifont_glyphs:
         log(f"→ 🔣 Processing unifont fallback glyphs...")
-        for style_key, bold in [("Regular", False), ("Bold", True)]:
-            unifont_tiles = trace_unifont_tiles(unifont_glyphs, bold)
+        unifont_tiles = trace_unifont_tiles(unifont_glyphs)
+        for style_key in ("Regular", "Bold"):
             for cp, tile in unifont_tiles.items():
                 if cp not in glyph_map[style_key]:
-                    glyph_map[style_key][cp] = tile
+                    glyph_map[style_key][cp] = dict(tile, bold_copies=style_key == "Bold")
 
     # 3. Sort by codepoint
     for key in glyph_map:
@@ -1348,25 +1337,24 @@ def build_glyph_map(providers, unifont_glyphs, stack=None, inset_vertices=True):
 
     return glyph_map
 
-def trace_unifont_tiles(unifont_glyphs, bold=False):
-    """Traces contours from parsed unifont hex bitmap data into tile dicts."""
+def trace_unifont_tiles(unifont_glyphs):
+    """Traces contours from parsed unifont hex bitmap data into tile dicts, one trace every style draws from."""
     tiles = {}
-    style_label = "Bold" if bold else "Regular"
-    debug_unifont = any(s.get("debug", {}).get("unifont") for s in FONT_STYLES if s["pixel_style"] == style_label)
+    debug_unifont = any(s.get("debug", {}).get("unifont") for s in FONT_STYLES)
 
     with tqdm(unifont_glyphs.items(), total=len(unifont_glyphs),
-              desc=f" → 🔣 {style_label}", unit="glyph",
+              desc=f" → 🔣 Unifont", unit="glyph",
               ncols=80, leave=False, file=sys.stdout, disable=is_silent()) as progress:
         for codepoint, bitmap_rows in progress:
             bitmap_grid = np.array(bitmap_rows, dtype=np.uint8)
-            pixel_data = _trace_bitmap_contours2(bitmap_grid, bold)
+            pixel_data = _trace_bitmap_contours2(bitmap_grid)
             width = len(bitmap_rows[0]) if bitmap_rows else 8
 
             svg = None
             if debug_unifont:
-                output = f"{WORK_DIR}/glyphs/unifont/{style_label.lower()}/{codepoint:04X}"
+                output = f"{WORK_DIR}/glyphs/unifont/regular/{codepoint:04X}"
                 os.makedirs(output, exist_ok=True)
-                svg = _write_tile_svg(pixel_data["grid"], (width, 16), f"{output}/{style_label.lower()}.svg")
+                svg = _write_tile_svg(pixel_data["grid"], (width, 16), f"{output}/regular.svg")
 
             tiles[codepoint] = {
                 "unicode": chr(codepoint),
@@ -1450,6 +1438,12 @@ def _process_alternate_font(alt_config, regular_map, stack):
 def precompute_glyph_scaling(glyph_map, inset_vertices=True):
     """Scales glyph coordinates from pixel space to font units, splits self-touching contours, and insets shared vertices.
 
+    Every tile also gets the contours its slanted style draws (scaled["runs"]). A tile marked
+    bold_copies (a Bold entry) is laid out as the game draws bold - the glyph twice, one bold
+    offset apart, each copy on the game's thickened quad (scaled["copies"]), with the bridges
+    that close the slivers between them (scaled["bridges"], scaled["slanted_bridges"]) - and
+    advances by its Regular advance plus that offset. Its copies are never inset.
+
     inset_vertices=False skips the shared-vertex inset for renderers that
     show hairline gaps where contours touch.
     """
@@ -1457,6 +1451,7 @@ def precompute_glyph_scaling(glyph_map, inset_vertices=True):
     per_style = len(next(iter(glyph_map.values())))
     total = per_style * styles
     log(f"→ ✖️ Pre-scaling {per_style} glyphs ({styles} styles)...")
+    unspaced = {}
 
     with tqdm(total=total, desc=" → 🔣 Scaling", unit="glyph",
               ncols=80, leave=False, file=sys.stdout, disable=is_silent()) as progress:
@@ -1495,6 +1490,18 @@ def precompute_glyph_scaling(glyph_map, inset_vertices=True):
                         (math.floor(0.5 + ink_width * display_scale) + 1)
                         * (UNITS_PER_EM / DEFAULT_GLYPH_SIZE))
 
+                # The game advances a bold glyph by its own advance plus its bold offset. A tile
+                # without advance_units would take its advance from its ink width as it is drawn,
+                # so a bold one fixes that advance here to add the offset to.
+                bold = tile.get("bold_copies", False)
+                if bold:
+                    offset = _bold_offset_units(tile)
+                    if display_scale is None or not pixels:
+                        ink_width = pixels.get("width", DEFAULT_GLYPH_SIZE) if pixels else DEFAULT_GLYPH_SIZE
+                        tile["advance_units"] = round((ink_width + 1) * scale)
+                    tile["advance_units"] += offset
+                    tile["bold_offset_units"] = offset
+
                 if not pixels:
                     tile["scaled"] = {"outer": [], "holes": []}
                     continue
@@ -1527,13 +1534,432 @@ def precompute_glyph_scaling(glyph_map, inset_vertices=True):
 
                 scaled_outer = _split_self_touching(scaled_outer)
                 scaled_holes = _split_self_touching(scaled_holes)
-                if inset_vertices:
+
+                # A bold copy keeps its shared vertices where they are: the other copy's ink runs along
+                # the row boundary through each one, and an inset corner would open a wedge beside it.
+                if inset_vertices and not bold:
                     scaled_outer, scaled_holes = _inset_shared_vertices(scaled_outer, scaled_holes)
 
+                if not bold:
+                    tile["scaled"] = {
+                        "outer": scaled_outer,
+                        "holes": scaled_holes,
+                        "runs": _slanted_runs(pixels["bitmap"], transform, inset_vertices),
+                    }
+                    continue
+
+                exact = _GlyphQuad(tile, scale, descender_offset, min_x, exact=True)
+                fast = _GlyphQuad(tile, scale, descender_offset, min_x, exact=False)
+                copies = [
+                    {"outer": [[fast.place(pt, dx) for pt in path] for path in scaled_outer],
+                     "holes": [[fast.place(pt, dx) for pt in path] for path in scaled_holes]}
+                    for dx in (0, offset)
+                ]
+                runs, slanted_bridges, snap = _snapped_slanted_runs(pixels["bitmap"], exact, fast, (0, offset))
+                if snap.unsnapped:
+                    log(f" → ⚠️ U+{cp:04X}: {snap.unsnapped} slanted bold edges keep a pixel centre on the "
+                        f"wrong side at some GUI scale in {SNAP_GUI_SCALES}; rounded to nearest")
+                if snap.unspaced:
+                    unspaced[cp] = snap.unspaced
                 tile["scaled"] = {
-                    "outer": scaled_outer,
-                    "holes": scaled_holes
+                    "outer": [path for copy in copies for path in copy["outer"]],
+                    "holes": [path for copy in copies for path in copy["holes"]],
+                    "copies": copies,
+                    "bridges": _upright_seam_bridges(pixels["bitmap"], fast, transform, (0, offset)),
+                    "runs": runs,
+                    "slanted_bridges": slanted_bridges,
                 }
+
+    if unspaced:
+        log(f" → ⚠️ {sum(unspaced.values())} slanted bold edges in {len(unspaced)} glyphs keep their pixel "
+            f"centres' sides but not {SNAP_EDGE_MARGIN} px from them at {SNAP_COARSE_PPEM} px/em and up")
+
+
+def _upright_seam_bridges(bitmap, quad, transform, offsets):
+    """The Bold copies' _seam_bridges: each copy's runs on the game's upright quad, each corner placed
+    as the copies' outlines place it, so a bridge's sides are the copies' edges to the last bit."""
+    def at(u, v, dx=0):
+        return quad.place(transform((u, v)), dx)
+
+    rows = defaultdict(list)
+    for r, start, end in _ink_runs(bitmap):
+        for dx in offsets:
+            left, right = at(start, r, dx)[0], at(end, r, dx)[0]
+            rows[r].append(((left, left), (right, right)))
+    return _seam_bridges([(at(0, r)[1], at(0, r + 1)[1], spans) for r, spans in sorted(rows.items())])
+
+
+def _bold_offset_units(tile):
+    """The game's bold offset for a tile, in font units: getBoldOffset() is one GUI pixel for a
+    bitmap glyph and for the space provider's space, half a pixel for a unifont glyph."""
+    if tile["codepoint"] == 0x0020:
+        return BOLD_OFFSET_UNITS["space"]
+    return BOLD_OFFSET_UNITS["unifont" if tile.get("source") == "unifont" else "provider"]
+
+
+def _ink_runs(bitmap):
+    """Each texel row's maximal runs of ink, as (row, first column, column after the last), top row first."""
+    runs = []
+    for r, row in enumerate(bitmap):
+        c, n = 0, len(row)
+        while c < n:
+            if row[c]:
+                start = c
+                while c < n and row[c]:
+                    c += 1
+                runs.append((r, start, c))
+            else:
+                c += 1
+    return runs
+
+
+def _slanted_runs(bitmap, transform, inset_vertices):
+    """The slanted style's contours for a glyph drawn once: a rectangle over each ink run of each
+    texel row, scaled as the upright outline is, then slanted as the game slants it,
+    x + (y - ITALIC_SHEAR_PIVOT) * ITALIC_SHEAR_FACTOR.
+
+    The game samples texels at pixel centres, so two ink texels that touch only at a corner meet
+    at a point and nothing more. Runs keep that: each pinch is the tips of two separate contours.
+    A traced outline joins an outer contour and a counter at such a corner, and a rasterizer's
+    dropout control fills a pixel across the join wherever the slant puts it on a pixel-centre
+    column. With inset_vertices, each tip of a pinch is inset as the upright outline's shared
+    vertices are; runs stacked on one another keep the whole edge they share, as the game's quad
+    has no gap between texel rows."""
+    runs = _ink_runs(bitmap)
+    pinches = _pinch_corners(runs) if inset_vertices else set()
+    contours = []
+    for r, start, end in runs:
+        corners = ((start, r), (start, r + 1), (end, r + 1), (end, r))
+        rect = [transform(pt) for pt in corners]
+        rect = [_inset_corner(rect, k) if corner in pinches else rect[k] for k, corner in enumerate(corners)]
+        contours.append([(x + (y - ITALIC_SHEAR_PIVOT) * ITALIC_SHEAR_FACTOR, y) for x, y in rect])
+    return contours
+
+
+def _pinch_corners(runs):
+    """The texel corners at which a run touches a run of the next row only diagonally: one ends on the
+    column boundary where the other starts."""
+    starts, ends = defaultdict(set), defaultdict(set)
+    for r, start, end in runs:
+        starts[r].add(start)
+        ends[r].add(end)
+    return {(c, r + 1) for r in list(starts) for c in (ends[r] & starts[r + 1]) | (starts[r] & ends[r + 1])}
+
+
+class _GlyphQuad:
+    """The quad the game lays one bold copy of a glyph on (BakedSheetGlyph.render), in font units
+    from the pen and the baseline, the glyph's left padding trimmed as every style trims it.
+
+    The quad spans the glyph's texture - a bitmap provider's whole cell, a unifont glyph's ink
+    columns by its 16 rows - grown by BOLD_EXTRA_THICKNESS on every side, and the texture is
+    sampled with its UVs inset GLYPH_UV_INSET: texel boundary u sits at (u - inset) /
+    (texels - 2 * inset) of the way across, and a border texel's outer inset is never drawn.
+    Slanted, the quad's top edge moves as the cell's top does and its bottom edge as the cell's
+    bottom does, so the thickened quad leans slightly less than the slant itself: a slanted point
+    of it is x + slope * y + lean.
+
+    An exact quad computes in Fractions, reading each float it is given as the small-denominator
+    ratio it stands for; otherwise it computes in floats."""
+
+    def __init__(self, tile, scale, descender_offset, min_x, exact):
+        value = (lambda v: Fraction(v).limit_denominator(10 ** 6)) if exact else float
+        self.zero, self.one = value(0), value(1)
+        bitmap = tile["pixels"]["bitmap"]
+        rows, columns = bitmap.shape
+        if tile.get("source") == "unifont":
+            ink_columns = np.where(bitmap.any(axis=0))[0]
+            self.first_column, self.columns = int(ink_columns[0]), int(ink_columns[-1] - ink_columns[0] + 1)
+        else:
+            self.first_column, self.columns = 0, columns
+        self.rows = rows
+        self.s = value(scale)
+        self.min_x = min_x
+        self.descender_offset = value(descender_offset)
+        self.inset = value(GLYPH_UV_INSET)
+        thickness = value(BOLD_EXTRA_THICKNESS)
+        cell_top = self.descender_offset * self.s
+        cell_height = rows * self.s
+        self.left = (self.first_column - min_x) * self.s - thickness
+        self.width = self.columns * self.s + 2 * thickness
+        self.top = cell_top + thickness
+        self.height = cell_height + 2 * thickness
+        factor = value(ITALIC_SHEAR_FACTOR)
+        self.slope = factor * cell_height / self.height
+        self.lean = factor * (cell_top - ITALIC_SHEAR_PIVOT) - self.slope * self.top
+
+    def _across(self, t, texels):
+        """How far across the quad texel coordinate t lies, 0 to 1, with the UV inset's clamp."""
+        if t <= self.inset:
+            return self.zero
+        if t >= texels - self.inset:
+            return self.one
+        return (t - self.inset) / (texels - 2 * self.inset)
+
+    def x(self, u):
+        """The upright x of texel column boundary u (cell columns)."""
+        return self.left + self._across(u - self.first_column, self.columns) * self.width
+
+    def y(self, v):
+        """The y of texel row boundary v (cell rows, top down)."""
+        return self.top - self._across(v, self.rows) * self.height
+
+    def place(self, pt, dx):
+        """Moves a point of the scaled upright outline onto the copy of the quad dx units right."""
+        x, y = pt
+        return (self.x(x / self.s + self.min_x) + dx, self.y(self.descender_offset - y / self.s))
+
+
+def _snapped_slanted_runs(bitmap, exact, fast, offsets):
+    """The BoldItalic contours: for each copy, a parallelogram over each ink run of each texel row,
+    its corners where the game's slanted, thickened quad puts that run's texel boundaries, every
+    vertex then moved to a whole font unit.
+
+    Rounding to the nearest unit can carry an edge across a pixel centre, as the thickened, inset
+    quad puts some texel boundaries within hundredths of a unit of one. So each row boundary takes
+    the nearest whole y, and each slanted edge the nearest pair of whole x, that keeps every pixel
+    centre at every GUI scale in SNAP_GUI_SCALES on the side the game samples it: a centre on a
+    row boundary or a run's left boundary belongs to that row or run, one on a run's right boundary
+    does not, and a centre on a written edge counts as inside it. At a GUI scale drawn at
+    SNAP_COARSE_PPEM or more, where FreeType places an edge's crossing of a pixel row only to about
+    a 64th of a pixel, the edge also keeps SNAP_EDGE_MARGIN output pixels from every centre. An edge
+    no candidate keeps that far keeps its sides alone; one no candidate keeps on its sides is rounded
+    to nearest.
+
+    Returns (contours, bridges, snap): bridges the quadrilaterals closing the slivers the two copies
+    leave between them (_seam_bridges), snap the _VertexSnap whose counts say how many edges fell
+    back."""
+    snap = _VertexSnap(exact, fast)
+    contours, rows = [], defaultdict(list)
+    for dx in offsets:
+        for r, start, end in _ink_runs(bitmap):
+            top, bottom = snap.level(r), snap.level(r + 1)
+            left_top, left_bottom = snap.edge(start, dx, r, True)
+            right_top, right_bottom = snap.edge(end, dx, r, False)
+            contours.append([(left_top, top), (left_bottom, bottom), (right_bottom, bottom), (right_top, top)])
+            rows[r].append(((left_top, left_bottom), (right_top, right_bottom)))
+    bridges = _seam_bridges([(snap.level(r), snap.level(r + 1), spans) for r, spans in sorted(rows.items())])
+    return contours, bridges, snap
+
+
+def _seam_bridges(rows):
+    """The quadrilaterals that close the slivers the two bold copies leave between them.
+
+    Where a row of ink has a one-texel hole, the second copy fills all but a sliver of it - 3.5 units
+    in an 8x8 cell, as the game's thickened quad stretches each texel a little wider than the bold
+    offset - which an antialiasing renderer draws as a hairline. rows holds, per texel row,
+    (top, bottom, spans), each span the (top, bottom) x of a run's left edge and of its right edge in
+    either copy. Where the next span along the row starts less than BOLD_SEAM_MAX_UNITS past the right
+    edge the spans before it reach, and no pixel centre at a GUI scale in SNAP_GUI_SCALES lies between
+    the two edges as written, a quadrilateral spanning both edges fills the gap: the game leaves no
+    pixel there unlit at those scales, so the scales draw exactly what they did."""
+    pitches = [Fraction(UNITS_PER_PIXEL_BASE, n) for n in SNAP_GUI_SCALES]
+    bridges = []
+    for top, bottom, spans in rows:
+        reach = None
+        for left, right in sorted(spans, key=lambda span: span[0][0] + span[0][1]):
+            if reach is not None:
+                width = max(left[0] - reach[0], left[1] - reach[1])
+                if 0 < width < BOLD_SEAM_MAX_UNITS and not _centre_in_gap(reach, left, top, bottom, pitches):
+                    bridges.append([(min(reach[0], left[0]), top), (min(reach[1], left[1]), bottom),
+                                    (max(reach[1], left[1]), bottom), (max(reach[0], left[0]), top)])
+            if reach is None or right[0] + right[1] > reach[0] + reach[1]:
+                reach = right
+    return bridges
+
+
+def _centre_in_gap(right, left, top, bottom, pitches):
+    """Whether a pixel centre in the row from bottom to top lies strictly between a run's right edge
+    and the next run's left edge, both (top x, bottom x), as they are written: rounded to whole units.
+    A centre on either edge is inside that edge's run."""
+    (rt, rb), (lt, lb) = [(otRound(t), otRound(b)) for t, b in (right, left)]
+    top, bottom = otRound(top), otRound(bottom)
+    for pitch in pitches:
+        for yc in _centres_between(bottom, top, pitch):
+            x_right = rb + (yc - bottom) * Fraction(rt - rb, top - bottom)
+            x_left = lb + (yc - bottom) * Fraction(lt - lb, top - bottom)
+            if any(x_right < xc < x_left for xc in _centres_between(x_right, x_left, pitch)):
+                return True
+    return False
+
+
+_FLOAT_SLACK = 1e-6  # how near a line a pixel centre may lie before a float comparison is not trusted
+
+
+def _edge_margin(gui_scale):
+    """The distance in font units a BoldItalic edge keeps from every pixel centre at a GUI scale:
+    SNAP_EDGE_MARGIN output pixels where the scale is drawn at SNAP_COARSE_PPEM or more, none below."""
+    pitch = Fraction(UNITS_PER_PIXEL_BASE, gui_scale)
+    return pitch * Fraction(SNAP_EDGE_MARGIN) if DEFAULT_GLYPH_SIZE * gui_scale >= SNAP_COARSE_PPEM else Fraction(0)
+
+
+class _VertexSnap:
+    """Chooses the whole-unit vertices of one bold glyph's slanted runs (see _snapped_slanted_runs),
+    keeping each row boundary's choice for the runs above and below it.
+
+    Every choice is first taken in floats, and taken again exactly only where a pixel centre lies
+    within float error of a line or of the margin, or the nearest whole unit is a tie; the two agree
+    wherever both are taken, so the exact path decides only what floats cannot. unspaced counts the
+    edges kept on their sides without the margin, unsnapped those rounded to nearest."""
+
+    def __init__(self, exact, fast):
+        self.exact, self.fast = exact, fast
+        self.level_pitches = [Fraction(UNITS_PER_PIXEL_BASE, n) for n in SNAP_GUI_SCALES]
+        self.float_level_pitches = [float(pitch) for pitch in self.level_pitches]
+        self.pitches = [(pitch, _edge_margin(n)) for pitch, n in zip(self.level_pitches, SNAP_GUI_SCALES)]
+        self.side_pitches = [(pitch, Fraction(0)) for pitch in self.level_pitches]
+        self.float_pitches = [(float(pitch), float(margin)) for pitch, margin in self.pitches]
+        self.levels = {}
+        self.unsnapped = 0
+        self.unspaced = 0
+
+    def level(self, v):
+        """The whole y of texel row boundary v."""
+        if v not in self.levels:
+            y = self.fast.y(v)
+            nearest = _float_round(y)
+            if nearest is None or _centre_between(y, nearest, self.float_level_pitches):
+                y = self.exact.y(v)
+                nearest = _snap_level(y, self.level_pitches)
+                if nearest is None:
+                    self.unsnapped += 1
+                    nearest = _round_half_up(y)
+            self.levels[v] = nearest
+        return self.levels[v]
+
+    def edge(self, u, dx, r, left):
+        """The whole x at the top and bottom of row r's slanted edge on texel column boundary u, in
+        the copy dx units right."""
+        top, bottom = self.level(r), self.level(r + 1)
+        fast = self.fast
+        x0, y_top, y_bottom = fast.x(u) + dx + fast.lean, fast.y(r), fast.y(r + 1)
+        xt, xb = _float_round(x0 + fast.slope * y_top), _float_round(x0 + fast.slope * y_bottom)
+        if xt is not None and xb is not None and _edge_verdict(
+                x0, fast.slope, y_top, y_bottom, xt, xb, top, bottom, left, self.float_pitches):
+            return xt, xb
+
+        exact = self.exact
+        x0, y_top, y_bottom = exact.x(u) + dx + exact.lean, exact.y(r), exact.y(r + 1)
+        ends = _snap_edge(x0, exact.slope, y_top, y_bottom, top, bottom, left, self.pitches)
+        if ends is None:
+            ends = _snap_edge(x0, exact.slope, y_top, y_bottom, top, bottom, left, self.side_pitches)
+            if ends is not None:
+                self.unspaced += 1
+        if ends is None:
+            self.unsnapped += 1
+            ends = (_round_half_up(x0 + exact.slope * y_top), _round_half_up(x0 + exact.slope * y_bottom))
+        return ends
+
+
+def _float_round(value):
+    """The whole number nearest a float, halves rounded up, or None when the float lies too near a
+    half for its rounding to be trusted."""
+    shifted = value + 0.5
+    nearest = math.floor(shifted)
+    if shifted - nearest <= _FLOAT_SLACK or nearest + 1 - shifted <= _FLOAT_SLACK:
+        return None
+    return nearest
+
+
+def _round_half_up(value):
+    """The whole number nearest an exact value, halves rounded up."""
+    return math.floor(value + Fraction(1, 2))
+
+
+def _centre_between(a, b, pitches):
+    """Whether any pixel centre, at any of the float pitches, lies between a and b or within float
+    error of either."""
+    low, high = min(a, b) - _FLOAT_SLACK, max(a, b) + _FLOAT_SLACK
+    return any(math.floor(high / pitch - 0.5) >= math.ceil(low / pitch - 0.5) for pitch in pitches)
+
+
+def _centres_between(low, high, pitch):
+    """The pixel centres (pitch * (m + 1/2)) from low to high inclusive, exact."""
+    first = math.ceil(low / pitch - Fraction(1, 2))
+    last = math.floor(high / pitch - Fraction(1, 2))
+    return [pitch * (m + Fraction(1, 2)) for m in range(first, last + 1)]
+
+
+def _snap_level(y, pitches):
+    """The whole y for a row boundary at exact y that leaves every row centre on its side - a centre
+    exactly on y belongs to the row below - with no centre on the whole y itself: the nearest that
+    does, halves rounded up; None if no candidate within a unit or so does."""
+    nearest = _round_half_up(y)
+    others = sorted((c for c in range(math.floor(y) - 1, math.ceil(y) + 2) if c != nearest),
+                    key=lambda c: (abs(c - y), -c))
+    for candidate in [nearest] + others:
+        if all(centre != candidate and (centre > candidate) == (centre > y)
+               for pitch in pitches
+               for centre in _centres_between(min(y, candidate), max(y, candidate), pitch)):
+            return candidate
+    return None
+
+
+def _snap_edge(x0, slope, y_top, y_bottom, top, bottom, left, pitches):
+    """The whole x at the snapped top and bottom of a slanted run edge, the exact edge being
+    x0 + slope * y from exact y_bottom up to y_top: the pair nearest the exact ends, within two units
+    of them, that keeps every pixel centre of the row on the game's side of it and its margin away,
+    halves rounded up. pitches holds a (pitch, margin) pair per GUI scale. The game counts a centre
+    on a left edge inside the run and one on a right edge outside it; a centre on the written edge,
+    left or right, is drawn. None if no candidate does."""
+    x_top, x_bottom = x0 + slope * y_top, x0 + slope * y_bottom
+    nearest = (_round_half_up(x_top), _round_half_up(x_bottom))
+    others = sorted(
+        ((xt, xb) for xt in range(math.floor(x_top) - 2, math.ceil(x_top) + 3)
+         for xb in range(math.floor(x_bottom) - 2, math.ceil(x_bottom) + 3) if (xt, xb) != nearest),
+        key=lambda c: (abs(c[0] - x_top) + abs(c[1] - x_bottom), -c[0], -c[1]))
+    for xt, xb in [nearest] + others:
+        if _edge_keeps_sides(x0, slope, y_top, y_bottom, xt, xb, top, bottom, left, pitches):
+            return xt, xb
+    return None
+
+
+def _keeps_side(inside, depth, margin):
+    """Whether a pixel centre the game samples inside a run (or outside it) is drawn so: depth is how
+    far inside the written edge the centre lies, negative outside. Inside needs a depth of at least
+    the margin, a centre on the edge counting as inside; outside needs the centre off the edge and
+    at least the margin out."""
+    return depth >= margin if inside else depth < 0 and -depth >= margin
+
+
+def _edge_verdict(x0, slope, y_top, y_bottom, xt, xb, top, bottom, left, pitches):
+    """_edge_keeps_sides in floats: True only when every pixel centre of the row keeps its side of
+    the written edge and its margin from it, and none lies within float error of the exact line, of
+    the margin or of the row's boundaries."""
+    for pitch, margin in pitches:
+        m = math.ceil((y_bottom - _FLOAT_SLACK) / pitch - 0.5)
+        while pitch * (m + 0.5) <= y_top + _FLOAT_SLACK:
+            yc = pitch * (m + 0.5)
+            m += 1
+            if abs(yc - y_bottom) <= _FLOAT_SLACK or abs(yc - y_top) <= _FLOAT_SLACK:
+                return False
+            x_exact = x0 + slope * yc
+            x_written = xb + (yc - bottom) * (xt - xb) / (top - bottom)
+            low = min(x_exact, x_written) - margin - _FLOAT_SLACK
+            high = max(x_exact, x_written) + margin + _FLOAT_SLACK
+            for n in range(math.ceil(low / pitch - 0.5), math.floor(high / pitch - 0.5) + 1):
+                xc = pitch * (n + 0.5)
+                depth = xc - x_written if left else x_written - xc
+                if abs(xc - x_exact) <= _FLOAT_SLACK or abs(abs(depth) - margin) <= _FLOAT_SLACK:
+                    return False
+                if not _keeps_side(xc >= x_exact if left else xc < x_exact, depth, margin):
+                    return False
+    return True
+
+
+def _edge_keeps_sides(x0, slope, y_top, y_bottom, xt, xb, top, bottom, left, pitches):
+    """Whether the written edge from (xb, bottom) to (xt, top) keeps every pixel centre of its row on
+    the side the exact edge x0 + slope * y puts it, and its margin from it, exactly."""
+    for pitch, margin in pitches:
+        for yc in _centres_between(y_bottom, y_top, pitch):
+            if yc == y_bottom:
+                continue  # a centre on the row's bottom boundary belongs to the row below
+            x_exact = x0 + slope * yc
+            x_written = xb + (yc - bottom) * Fraction(xt - xb, top - bottom)
+            for xc in _centres_between(min(x_exact, x_written) - margin, max(x_exact, x_written) + margin, pitch):
+                depth = xc - x_written if left else x_written - xc
+                if not _keeps_side(xc >= x_exact if left else xc < x_exact, depth, margin):
+                    return False
+    return True
 
 def _split_self_touching(contours):
     """Splits self-touching contours at duplicate vertices.
@@ -1587,20 +2013,22 @@ def _inset_shared_vertices(scaled_outer, scaled_holes):
         return scaled_outer, scaled_holes
 
     for i, contour in enumerate(all_contours):
-        inset = []
-        n = len(contour)
-        for k, (x, y) in enumerate(contour):
-            if (round(x), round(y)) in shared_pts:
-                px, py = contour[(k - 1) % n]
-                nx, ny = contour[(k + 1) % n]
-                dx = (px - x) + (nx - x)
-                dy = (py - y) + (ny - y)
-                dist = (dx * dx + dy * dy) ** 0.5
-                if dist > 0:
-                    x += dx / dist
-                    y += dy / dist
-            inset.append((x, y))
-        all_contours[i] = inset
+        all_contours[i] = [_inset_corner(contour, k) if (round(x), round(y)) in shared_pts else (x, y)
+                           for k, (x, y) in enumerate(contour)]
 
     outer_count = len(scaled_outer)
     return all_contours[:outer_count], all_contours[outer_count:]
+
+
+def _inset_corner(contour, k):
+    """Vertex k of a contour moved 1 font unit along the bisector of its two edges, into the contour."""
+    x, y = contour[k]
+    px, py = contour[k - 1]
+    nx, ny = contour[(k + 1) % len(contour)]
+    dx = (px - x) + (nx - x)
+    dy = (py - y) + (ny - y)
+    dist = (dx * dx + dy * dy) ** 0.5
+    if dist > 0:
+        x += dx / dist
+        y += dy / dist
+    return x, y

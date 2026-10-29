@@ -91,7 +91,7 @@ class GlyphStorage:
 
         name = glyph.name
         if name in ("space", "uni0020"):
-            advance_width = UNITS_PER_EM // 2
+            advance_width = UNITS_PER_EM // 2 + glyph.bold_offset_units
         elif glyph.advance_units is not None:
             advance_width = glyph.advance_units
         else:

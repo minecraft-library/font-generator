@@ -1,10 +1,12 @@
+from math import degrees
+
 from fontTools.ttLib import newTable
 from fontTools.cffLib import (
     CFFFontSet, TopDict, TopDictIndex, Index,
     PrivateDict, CharStrings
 )
 
-from minecraft_fontgen.config import OUTPUT_FONT_NAME, BOUNDING_BOX, UNITS_PER_EM
+from minecraft_fontgen.config import OUTPUT_FONT_NAME, BOUNDING_BOX, ITALIC_SHEAR_ANGLE, UNITS_PER_EM
 from minecraft_fontgen.functions import get_font_type
 
 
@@ -29,6 +31,8 @@ def create_ot_font_tables(font, bold = False, italic = False):
     #top_dict.Notice = f"{FONT_NAME} Font Generation by {DESIGNER}"
     top_dict.FontBBox = BOUNDING_BOX
     top_dict.FontMatrix = [1 / UNITS_PER_EM, 0, 0, 1 / UNITS_PER_EM, 0, 0]
+    if italic:
+        top_dict.ItalicAngle = -degrees(ITALIC_SHEAR_ANGLE)  # the slant the post table states too
 
     # Rebuild CharStrings
     private = PrivateDict()
